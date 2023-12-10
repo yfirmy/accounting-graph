@@ -55,10 +55,11 @@ def get_account_name(account_id):
     account_name = ""
     try:
         account_name = config.get('Accounts', str(account_id))
-    except Exception as e:
-        print("Failed to load retrieve name for account " + str(account_id), str(e))
+    except Exception as ex:
+        print("Failed to retrieve the name of account " + str(account_id), str(ex))
     finally:
         return account_name if account_name else ""
+
 
 def analyse_operations(history):
     balance, min_date, max_date = compute_balance_evolution(history)
