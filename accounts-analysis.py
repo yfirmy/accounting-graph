@@ -120,7 +120,7 @@ def compute_balance_evolution(history):
     for date1 in balance:
         print(date1.strftime("%d/%m/%Y") + ": " + str(balance[date1]))
 
-    return balance, min_date, max_date
+    return balance, min_date, history.last_date
 
 
 def calculate_month_difference(last_date, current_date):
