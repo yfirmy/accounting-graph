@@ -70,6 +70,7 @@ def analyse_operations(history):
 
 def draw_balance_evolution(account_id, balance, min_date, max_date):
     fig, axes = plt.subplots()
+    fig.set_figwidth(20)
     lists = sorted(balance.items())
     x, y = zip(*lists)
     axes.plot(x, y)
@@ -85,6 +86,7 @@ def draw_balance_evolution(account_id, balance, min_date, max_date):
 
 def draw_balance_comparison(account_id, balance_compared):
     fig, axes = plt.subplots()
+    fig.set_figwidth(20)
     for m in reversed(range(0, 12)):
         if m == 0:
             color = "red"
