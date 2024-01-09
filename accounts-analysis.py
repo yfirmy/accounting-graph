@@ -116,7 +116,7 @@ def compute_balance_evolution(history):
         balance[current_date] = current_balance
         current_date = current_date - datetime.timedelta(days=1)
 
-    print("Solde")
+    print("Balance for account " + str(history.account_id) + " - " + get_account_name(history.account_id))
     for date1 in balance:
         print(date1.strftime("%d/%m/%Y") + ": " + str(balance[date1]))
 
@@ -202,11 +202,15 @@ def parse_ofx(filename):
         for account in ofx.accounts:
             history = History(account.account_id)
             statement = account.statement
-            for transaction in statement.transactions:
-                history.add(Operation(transaction.id,
-                                      transaction.date,
-                                      transaction.memo,
-                                      transaction.amount))
+            if len(statement.transactions) == 0:
+                print("WARNING: No transaction in this file for account " + str(account.account_id) +
+                      " - " + get_account_name(account.account_id))
+            else:
+                for transaction in statement.transactions:
+                    history.add(Operation(transaction.id,
+                                          transaction.date,
+                                          transaction.memo,
+                                          transaction.amount))
 
             history.last_date = statement.end_date.replace(hour=0, minute=0, second=0, microsecond=0)
             history.last_balance = float(statement.balance)
