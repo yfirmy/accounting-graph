@@ -84,16 +84,19 @@ def draw_balance_evolution(account_id, balance, min_date, max_date):
     plt.show()
 
 
+# Multi-Month Daily Bank Balance Trend Graph
+# comparing daily bank balances across multiple months
 def draw_balance_comparison(account_id, balance_compared):
     fig, axes = plt.subplots()
     fig.set_figwidth(20)
-    for m in reversed(range(0, 12)):
-        if m == 0:
+    for month_age in reversed(range(0, 12)):
+        if month_age == 0:
             color = "red"
         else:
-            color_intensity = 0.52 + (m * (1 / 28))  # 0.9 - (m * (1/24))
+            color_intensity = 0.52 + (month_age * (1 / 28))  # 0.9 - (m * (1/24))
             color = (color_intensity, color_intensity, color_intensity)
-        plt.plot(range(0, len(balance_compared[m])), balance_compared[m], color=color)
+        if month_age < len(balance_compared):
+            plt.plot(range(0, len(balance_compared[month_age])), balance_compared[month_age], color=color)
     plt.hlines(y=0, xmin=1, xmax=31, colors='grey', linestyles='--')
     axes.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=(0, 1, 2, 3, 4, 5, 6)))
     axes.xaxis.set_minor_locator(mdates.DayLocator())
