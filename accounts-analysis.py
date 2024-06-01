@@ -18,6 +18,7 @@ DAYS_IN_MONTH = 31
 IMPORT_FLAG = "--import"
 DRY_RUN_FLAG = "--dry-run"
 DEBUG_FLAG = "--debug"
+CURRENCY = "€"
 
 config = configparser.RawConfigParser()
 
@@ -67,13 +68,21 @@ def get_account_name(account_id):
 
 
 def analyse_operations(history, connection, debug_mode: bool):
-    balance, min_date, max_date = compute_balance_evolution(history, connection, debug_mode)
-    draw_balance_evolution(history.account_id, balance, min_date, max_date)
-    balance_compared = compute_balance_compared(balance, history.last_date)
+    (balance_over_time, min_date, max_date,
+     min_balance, min_balance_date,
+     max_balance, max_balance_date) = compute_balance_evolution(history, connection, debug_mode)
+    draw_balance_evolution(history.account_id, balance_over_time, min_date, max_date,
+                           min_balance, min_balance_date, max_balance, max_balance_date)
+    balance_compared = compute_balance_compared(balance_over_time, history.last_date)
     draw_balance_comparison(history.account_id, balance_compared)
 
 
-def draw_balance_evolution(account_id, balance, min_date, max_date):
+def draw_balance_evolution(account_id, balance, min_date, max_date,
+                           min_balance, min_balance_date, max_balance, max_balance_date):
+
+    last_balance = balance[next(iter(balance))]
+    offset = (max_balance - min_balance) * 0.7 / 100.0
+
     fig, axes = plt.subplots()
     fig.set_figwidth(20)
     lists = sorted(balance.items())
@@ -86,6 +95,14 @@ def draw_balance_evolution(account_id, balance, min_date, max_date):
     axes.set_title("Evolution du solde - " + get_account_name(account_id) + " (" + str(account_id) + ")")
     axes.set_ylabel(r'Solde')
     plt.hlines(y=0, xmin=min_date, xmax=max_date, colors='grey', linestyles='--')
+    plt.plot(min_balance_date, min_balance, marker='o', color="blue")
+    plt.text(min_balance_date, min_balance - offset, " " + "{:.2f}".format(min_balance) + " " + CURRENCY, color="blue",
+             verticalalignment='top')
+    plt.plot(max_balance_date, max_balance, marker='o', color="red")
+    plt.text(max_balance_date, max_balance + offset, " " + "{:.2f}".format(max_balance) + " " + CURRENCY, color="red",
+             verticalalignment='bottom')
+    plt.plot(max_date, last_balance, marker='o', color='black')
+    plt.text(max_date, last_balance + offset, " " + "{:.2f}".format(last_balance) + " " + CURRENCY, color="black")
     plt.show()
 
 
@@ -116,18 +133,33 @@ def compute_balance_evolution(account_statement, connection, debug_mode: bool):
     balance_over_time = {}
     current_date = account_statement.last_date
     current_balance = account_statement.last_balance
+    min_balance = account_statement.last_balance
+    min_balance_date = account_statement.last_date
+    max_balance = account_statement.last_balance
+    max_balance_date = account_statement.last_date
 
     while current_date >= min_date:
         if current_date in account_statement.operations:
             for operation in account_statement.operations[current_date]:
                 current_balance = current_balance - operation.value
         balance_over_time[current_date] = current_balance
+
+        if current_balance < min_balance:
+            min_balance = current_balance
+            min_balance_date = current_date
+        if current_balance > max_balance:
+            max_balance = current_balance
+            max_balance_date = current_date
+
         current_date = current_date - datetime.timedelta(days=1)
 
     balance_health_check(account_statement, balance_over_time, connection)
     balance_debug(debug_mode, account_statement, balance_over_time)
 
-    return balance_over_time, min_date, account_statement.last_date
+    return (balance_over_time,
+            min_date, account_statement.last_date,
+            min_balance, min_balance_date,
+            max_balance, max_balance_date)
 
 
 def check_balance_in_checkpoints(date, balance, cur):
