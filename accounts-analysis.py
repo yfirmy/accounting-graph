@@ -28,7 +28,7 @@ class Operation:
         self.value = amount
 
     def debug(self):
-        return self.id + " " + str(self.date) + " " + str(self.value) + " \"" + self.label + "\""
+        return self.id + " " + str(self.date) + " " + "{:>8}".format(str(self.value)) + " \"" + self.label + "\""
 
 
 class History:
@@ -64,8 +64,8 @@ def get_account_name(account_id):
         return account_name if account_name else ""
 
 
-def analyse_operations(history):
-    balance, min_date, max_date = compute_balance_evolution(history)
+def analyse_operations(history, debug_mode: bool):
+    balance, min_date, max_date = compute_balance_evolution(history, debug_mode)
     draw_balance_evolution(history.account_id, balance, min_date, max_date)
     balance_compared = compute_balance_compared(balance, history.last_date)
     draw_balance_comparison(history.account_id, balance_compared)
@@ -109,7 +109,7 @@ def draw_balance_comparison(account_id, balance_compared):
     plt.show()
 
 
-def compute_balance_evolution(history):
+def compute_balance_evolution(history, debug_mode: bool):
     min_date, max_date = history.get_date_boundaries()
     balance = {}
     current_date = history.last_date
@@ -122,9 +122,10 @@ def compute_balance_evolution(history):
         balance[current_date] = current_balance
         current_date = current_date - datetime.timedelta(days=1)
 
-    print("Balance for account " + str(history.account_id) + " - " + get_account_name(history.account_id))
-    for date1 in balance:
-        print(date1.strftime("%d/%m/%Y") + ": " + str(balance[date1]))
+    if debug_mode:
+        print("Balance for account " + str(history.account_id) + " - " + get_account_name(history.account_id))
+        for date1 in balance:
+            print(date1.strftime("%d/%m/%Y") + ": " + str(balance[date1]))
 
     return balance, min_date, history.last_date
 
@@ -190,21 +191,21 @@ def parse_file(filename):
         raise ValueError("Invalid file format")
 
 
-def process_history(new_histories, debug: bool):
+def process_history(new_histories, dry_run_mode: bool, debug_mode: bool):
     for new_history in new_histories:
         with open_database_connection(new_history.account_id) as connection:
-            prepare_and_analyse_history(new_history, connection, debug)
+            prepare_and_analyse_history(new_history, connection, dry_run_mode, debug_mode)
 
 
-def prepare_and_analyse_history(new_history, connection, debug: bool):
+def prepare_and_analyse_history(new_history, connection, dry_run_mode: bool, debug_mode: bool):
     create_table_if_not_exists(connection)
-    if debug:
+    if dry_run_mode:
         search_operations_in_database(new_history, connection)
     else:
         write_operations_in_database(new_history, connection)
         whole_history = read_transactions_from_database(new_history.account_id, connection)
         update_history_details(new_history, whole_history)
-        analyse_operations(whole_history)
+        analyse_operations(whole_history, debug_mode)
 
 
 def update_history_details(new_history, whole_history):
@@ -212,9 +213,9 @@ def update_history_details(new_history, whole_history):
     whole_history.last_balance = new_history.last_balance
 
 
-def main(filename, dry_run: bool):
+def main(filename, dry_run_mode: bool, debug_mode: bool):
     new_histories = parse_file(filename)
-    process_history(new_histories, dry_run)
+    process_history(new_histories, dry_run_mode, debug_mode)
 
 
 def parse_ofx(filename):
@@ -284,17 +285,18 @@ def print_usage_and_exit():
     exit(1)
 
 
-def process_import(filename, dry_run: bool):
-    main(filename, dry_run)
+def process_import(filename, dry_run_mode: bool, debug_mode: bool):
+    main(filename, dry_run_mode, debug_mode)
 
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == IMPORT_FLAG:
-        dry_run = len(sys.argv) == 4 and sys.argv[3] == '--dry-run'
+        dry_run = (len(sys.argv) >= 4 and sys.argv[3] == '--dry-run') or (len(sys.argv) == 5 and sys.argv[4] == '--dry-run')
+        debug = (len(sys.argv) >= 4 and sys.argv[3] == '--debug') or (len(sys.argv) == 5 and sys.argv[4] == '--debug')
         try:
             config.read("conf/properties.ini")
         except Exception as e:
             print("Failed to load properties configuration file:", str(e))
-        process_import(sys.argv[2], dry_run)
+        process_import(sys.argv[2], dry_run, debug)
     else:
         print_usage_and_exit()
