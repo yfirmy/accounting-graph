@@ -87,7 +87,7 @@ def draw_balance_evolution(account_id, balance, min_date, max_date,
     fig.set_figwidth(20)
     lists = sorted(balance.items())
     x, y = zip(*lists)
-    axes.plot(x, y)
+    axes.plot(x, y, color="mediumseagreen")
     axes.xaxis.set_major_locator(mdates.MonthLocator())
     for label in axes.get_xticklabels(which='major'):
         label.set(rotation=30, horizontalalignment='right')
@@ -95,13 +95,13 @@ def draw_balance_evolution(account_id, balance, min_date, max_date,
     axes.set_title("Evolution du solde - " + get_account_name(account_id) + " (" + str(account_id) + ")")
     axes.set_ylabel(r'Solde')
     plt.hlines(y=0, xmin=min_date, xmax=max_date, colors='grey', linestyles='--')
-    plt.plot(min_balance_date, min_balance, marker='o', color="blue")
+    plt.plot(min_balance_date, min_balance, marker='x', color="blue")
     plt.text(min_balance_date, min_balance - offset, " " + "{:.2f}".format(min_balance) + " " + CURRENCY, color="blue",
              verticalalignment='top')
-    plt.plot(max_balance_date, max_balance, marker='o', color="red")
+    plt.plot(max_balance_date, max_balance, marker='x', color="red")
     plt.text(max_balance_date, max_balance + offset, " " + "{:.2f}".format(max_balance) + " " + CURRENCY, color="red",
              verticalalignment='bottom')
-    plt.plot(max_date, last_balance, marker='o', color='black')
+    plt.plot(max_date, last_balance, marker='x', color='black')
     plt.text(max_date, last_balance + offset, " " + "{:.2f}".format(last_balance) + " " + CURRENCY, color="black")
     plt.show()
 
@@ -125,6 +125,10 @@ def draw_balance_comparison(account_id, balance_compared):
     axes.grid(True)
     axes.set_title("Comparaison du solde - " + get_account_name(account_id) + " (" + str(account_id) + ")")
     axes.set_ylabel(r'Solde')
+    last_day = len(balance_compared[0]) - 1
+    last_balance = balance_compared[0][last_day]
+    plt.plot(last_day, last_balance, marker='x', color='red')
+    plt.text(last_day, last_balance + 10, " " + "{:.2f}".format(last_balance) + " " + CURRENCY, color="red")
     plt.show()
 
 
@@ -254,10 +258,11 @@ def parse_file(filename):
         raise ValueError("Invalid file format")
 
 
-def process_history(new_histories, dry_run_mode: bool, debug_mode: bool):
-    for new_history in new_histories:
-        with open_database_connection(new_history.account_id) as connection:
-            prepare_and_analyse_history(new_history, connection, dry_run_mode, debug_mode)
+def process_history(new_account_statements, dry_run_mode: bool, debug_mode: bool):
+    new_list = sorted(new_account_statements, key=lambda x: x.account_id, reverse=False)
+    for new_account_statement in new_list:
+        with open_database_connection(new_account_statement.account_id) as connection:
+            prepare_and_analyse_history(new_account_statement, connection, dry_run_mode, debug_mode)
 
 
 def prepare_and_analyse_history(new_history, connection, dry_run_mode: bool, debug_mode: bool):
@@ -288,8 +293,8 @@ def update_checkpoints(acc_statement, connection):
 
 
 def main(filename, dry_run_mode: bool, debug_mode: bool):
-    new_histories = parse_file(filename)
-    process_history(new_histories, dry_run_mode, debug_mode)
+    new_account_statements = parse_file(filename)
+    process_history(new_account_statements, dry_run_mode, debug_mode)
 
 
 def parse_ofx(filename):
