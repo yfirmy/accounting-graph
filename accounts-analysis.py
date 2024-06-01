@@ -31,7 +31,7 @@ class Operation:
         return self.id + " " + str(self.date) + " " + "{:>8}".format(str(self.value)) + " \"" + self.label + "\""
 
 
-class History:
+class AccountStatement:
     def __init__(self, account_id):
         self.account_id = account_id
         self.operations = {}
@@ -170,12 +170,12 @@ def search_operations_in_database(history, connection):
     print()
 
 def read_transactions_from_database(account_id, connection):
-    history = History(account_id)
+    account_statement = AccountStatement(account_id)
     cursor = connection.execute("SELECT ID, DATE, DATE_EPOCH, LABEL, AMOUNT FROM TRANSACTIONS ORDER BY DATE_EPOCH DESC")
     for row in cursor:
         op = Operation(row[0], datetime.datetime.utcfromtimestamp(int(row[2])), row[3], float(row[4]))
-        history.add(op)
-    return history
+        account_statement.add(op)
+    return account_statement
 
 
 def open_database_connection(account_id):
@@ -219,11 +219,11 @@ def main(filename, dry_run_mode: bool, debug_mode: bool):
 
 
 def parse_ofx(filename):
-    histories = []
+    parsed_account_statements = []
     with open(filename, 'r', encoding="cp1252") as ofxFile:
         ofx = OfxParser.parse(ofxFile)
         for account in ofx.accounts:
-            history = History(account.account_id)
+            account_statement = AccountStatement(account.account_id)
             statement = account.statement
             print("\nAccount " + account.account_id + " \"" + get_account_name(account.account_id) + "\": ")
             if len(statement.transactions) == 0:
@@ -236,19 +236,19 @@ def parse_ofx(filename):
                                           transaction.memo,
                                           transaction.amount)
                     print(operation.debug());
-                    history.add(operation)
+                    account_statement.add(operation)
 
-            history.last_date = statement.end_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            history.last_balance = float(statement.balance)
-            histories.append(history)
+            account_statement.last_date = statement.end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            account_statement.last_balance = float(statement.balance)
+            parsed_account_statements.append(account_statement)
 
     print()
-    return histories
+    return parsed_account_statements
 
 
 def parse_csv(filename):
     histories = []
-    history = History(0)
+    history = AccountStatement(0)
     with open(filename, 'r', encoding="ISO 8859-1") as csvFile:
         account_reader = csv.reader(csvFile, delimiter=';', quotechar='"')
         pattern_last_balance = re.compile(r'Solde au ([0-3][0-9]\/[0-1][0-9]\/[1-2][0-9]{3}) ([\d+\xa0]*\d+,\d\d) \x80')
