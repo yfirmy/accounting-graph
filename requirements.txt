@@ -16,7 +16,7 @@ mpld3==0.5.9
 numpy==1.24.4
 ofxparse==0.21
 packaging==23.2
-Pillow==10.1.0
+pillow==10.3.0
 pipenv==2023.11.15
 platformdirs==4.1.0
 pyparsing==3.1.1
