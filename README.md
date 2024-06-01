@@ -1,5 +1,5 @@
 # accounting-graph
-Scripts to store and graph personnal accounting data
+Scripts to store and graph personal bank accounts data
 
 ## accounts-analysis
  - import OFX files (or CSV files)
