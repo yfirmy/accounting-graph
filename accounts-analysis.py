@@ -27,6 +27,9 @@ class Operation:
         self.label = label
         self.value = amount
 
+    def debug(self):
+        return self.id + " " + str(self.date) + " " + str(self.value) + " \"" + self.label + "\""
+
 
 class History:
     def __init__(self, account_id):
@@ -152,6 +155,19 @@ def write_operations_in_database(history, connection):
     connection.commit()
 
 
+def search_operations_in_database(history, connection):
+    print("Searching operations in database for account " + str(history.account_id) + " (" + get_account_name(
+        history.account_id) + ")")
+    cur = connection.cursor()
+    for opDate in history.operations:
+        for op in history.operations[opDate]:
+            request = "SELECT * FROM TRANSACTIONS WHERE ID =" + str(op.id)
+            cur.execute(request)
+            row = cur.fetchone()
+            if row is None:
+                print("Operation " + str(op.id) + " is new: " + op.debug())
+    print()
+
 def read_transactions_from_database(account_id, connection):
     history = History(account_id)
     cursor = connection.execute("SELECT ID, DATE, DATE_EPOCH, LABEL, AMOUNT FROM TRANSACTIONS ORDER BY DATE_EPOCH DESC")
@@ -174,18 +190,21 @@ def parse_file(filename):
         raise ValueError("Invalid file format")
 
 
-def process_history(new_histories):
+def process_history(new_histories, debug: bool):
     for new_history in new_histories:
         with open_database_connection(new_history.account_id) as connection:
-            prepare_and_analyse_history(new_history, connection)
+            prepare_and_analyse_history(new_history, connection, debug)
 
 
-def prepare_and_analyse_history(new_history, connection):
+def prepare_and_analyse_history(new_history, connection, debug: bool):
     create_table_if_not_exists(connection)
-    write_operations_in_database(new_history, connection)
-    whole_history = read_transactions_from_database(new_history.account_id, connection)
-    update_history_details(new_history, whole_history)
-    analyse_operations(whole_history)
+    if debug:
+        search_operations_in_database(new_history, connection)
+    else:
+        write_operations_in_database(new_history, connection)
+        whole_history = read_transactions_from_database(new_history.account_id, connection)
+        update_history_details(new_history, whole_history)
+        analyse_operations(whole_history)
 
 
 def update_history_details(new_history, whole_history):
@@ -193,9 +212,9 @@ def update_history_details(new_history, whole_history):
     whole_history.last_balance = new_history.last_balance
 
 
-def main(filename):
+def main(filename, dry_run: bool):
     new_histories = parse_file(filename)
-    process_history(new_histories)
+    process_history(new_histories, dry_run)
 
 
 def parse_ofx(filename):
@@ -205,20 +224,24 @@ def parse_ofx(filename):
         for account in ofx.accounts:
             history = History(account.account_id)
             statement = account.statement
+            print("\nAccount " + account.account_id + " \"" + get_account_name(account.account_id) + "\": ")
             if len(statement.transactions) == 0:
                 print("WARNING: No transaction in this file for account " + str(account.account_id) +
                       " - " + get_account_name(account.account_id))
             else:
                 for transaction in statement.transactions:
-                    history.add(Operation(transaction.id,
+                    operation = Operation(transaction.id,
                                           transaction.date,
                                           transaction.memo,
-                                          transaction.amount))
+                                          transaction.amount)
+                    print(operation.debug());
+                    history.add(operation)
 
             history.last_date = statement.end_date.replace(hour=0, minute=0, second=0, microsecond=0)
             history.last_balance = float(statement.balance)
             histories.append(history)
 
+    print()
     return histories
 
 
@@ -261,15 +284,17 @@ def print_usage_and_exit():
     exit(1)
 
 
-def process_import(filename):
-    main(filename)
+def process_import(filename, dry_run: bool):
+    main(filename, dry_run)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] != IMPORT_FLAG:
+    if len(sys.argv) >= 3 and sys.argv[1] == IMPORT_FLAG:
+        dry_run = len(sys.argv) == 4 and sys.argv[3] == '--dry-run'
+        try:
+            config.read("conf/properties.ini")
+        except Exception as e:
+            print("Failed to load properties configuration file:", str(e))
+        process_import(sys.argv[2], dry_run)
+    else:
         print_usage_and_exit()
-    try:
-        config.read("conf/properties.ini")
-    except Exception as e:
-        print("Failed to load properties configuration file:", str(e))
-    process_import(sys.argv[2])
