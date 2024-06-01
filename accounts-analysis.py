@@ -16,6 +16,8 @@ from ofxparse import OfxParser
 MONTHS_IN_YEAR = 12
 DAYS_IN_MONTH = 31
 IMPORT_FLAG = "--import"
+DRY_RUN_FLAG = "--dry-run"
+DEBUG_FLAG = "--debug"
 
 config = configparser.RawConfigParser()
 
@@ -64,8 +66,8 @@ def get_account_name(account_id):
         return account_name if account_name else ""
 
 
-def analyse_operations(history, debug_mode: bool):
-    balance, min_date, max_date = compute_balance_evolution(history, debug_mode)
+def analyse_operations(history, connection, debug_mode: bool):
+    balance, min_date, max_date = compute_balance_evolution(history, connection, debug_mode)
     draw_balance_evolution(history.account_id, balance, min_date, max_date)
     balance_compared = compute_balance_compared(balance, history.last_date)
     draw_balance_comparison(history.account_id, balance_compared)
@@ -109,25 +111,53 @@ def draw_balance_comparison(account_id, balance_compared):
     plt.show()
 
 
-def compute_balance_evolution(history, debug_mode: bool):
-    min_date, max_date = history.get_date_boundaries()
-    balance = {}
-    current_date = history.last_date
-    current_balance = history.last_balance
+def compute_balance_evolution(account_statement, connection, debug_mode: bool):
+    min_date, max_date = account_statement.get_date_boundaries()
+    balance_over_time = {}
+    current_date = account_statement.last_date
+    current_balance = account_statement.last_balance
 
     while current_date >= min_date:
-        if current_date in history.operations:
-            for operation in history.operations[current_date]:
+        if current_date in account_statement.operations:
+            for operation in account_statement.operations[current_date]:
                 current_balance = current_balance - operation.value
-        balance[current_date] = current_balance
+        balance_over_time[current_date] = current_balance
         current_date = current_date - datetime.timedelta(days=1)
 
-    if debug_mode:
-        print("Balance for account " + str(history.account_id) + " - " + get_account_name(history.account_id))
-        for date1 in balance:
-            print(date1.strftime("%d/%m/%Y") + ": " + str(balance[date1]))
+    balance_health_check(account_statement, balance_over_time, connection)
+    balance_debug(debug_mode, account_statement, balance_over_time)
 
-    return balance, min_date, history.last_date
+    return balance_over_time, min_date, account_statement.last_date
+
+
+def check_balance_in_checkpoints(date, balance, cur):
+    cur.execute("SELECT * FROM CHECKPOINTS WHERE DATE_EPOCH = ?", (date.strftime('%s'),))
+    row = cur.fetchone()
+    if row is None:
+        return True, None
+    else:
+        return (len(row) == 3 and float(row[2]) == balance), float(row[2])
+
+
+def balance_health_check(acc_statement, balance_over_time, connection):
+    print("Healthcheck for balance evolution of account " +
+          str(acc_statement.account_id) + " - " + get_account_name(acc_statement.account_id))
+    cur = connection.cursor()
+    for date in balance_over_time:
+        coherent_with_checkpoint, previous_balance = check_balance_in_checkpoints(date, balance_over_time[date], cur)
+        if not coherent_with_checkpoint:
+            print(date.strftime("%d/%m/%Y") + ": " + str(balance_over_time[date]) +
+                  ": balance does not match previous checkpoint " + str(previous_balance))
+            raise ValueError("Invalid balance in checkpoints")
+    print("OK")
+
+
+def balance_debug(debug_mode: bool, acc_statement, balance_over_time):
+    if debug_mode:
+        print("Balance for account " + str(acc_statement.account_id) + " - " + get_account_name(
+            acc_statement.account_id), )
+        for date in balance_over_time:
+            print(date.strftime("%d/%m/%Y") + ": " + str(balance_over_time[date]))
 
 
 def calculate_month_difference(last_date, current_date):
@@ -169,6 +199,7 @@ def search_operations_in_database(history, connection):
                 print("Operation " + str(op.id) + " is new: " + op.debug())
     print()
 
+
 def read_transactions_from_database(account_id, connection):
     account_statement = AccountStatement(account_id)
     cursor = connection.execute("SELECT ID, DATE, DATE_EPOCH, LABEL, AMOUNT FROM TRANSACTIONS ORDER BY DATE_EPOCH DESC")
@@ -198,19 +229,30 @@ def process_history(new_histories, dry_run_mode: bool, debug_mode: bool):
 
 
 def prepare_and_analyse_history(new_history, connection, dry_run_mode: bool, debug_mode: bool):
-    create_table_if_not_exists(connection)
+    create_transactions_table_if_not_exists(connection)
+    create_checkpoints_table_if_not_exists(connection)
     if dry_run_mode:
         search_operations_in_database(new_history, connection)
     else:
         write_operations_in_database(new_history, connection)
         whole_history = read_transactions_from_database(new_history.account_id, connection)
         update_history_details(new_history, whole_history)
-        analyse_operations(whole_history, debug_mode)
+        update_checkpoints(whole_history, connection)
+        analyse_operations(whole_history, connection, debug_mode)
 
 
 def update_history_details(new_history, whole_history):
     whole_history.last_date = new_history.last_date
     whole_history.last_balance = new_history.last_balance
+
+
+def update_checkpoints(acc_statement, connection):
+    last_balance = acc_statement.last_balance
+    last_date = acc_statement.last_date
+    request = "INSERT OR IGNORE INTO CHECKPOINTS (DATE_EPOCH, DATE, BALANCE) VALUES \
+               (" + last_date.strftime('%s') + ", '" + last_date.strftime("%d/%m/%Y") + "', " + str(last_balance) + " )"
+    connection.execute(request)
+    connection.commit()
 
 
 def main(filename, dry_run_mode: bool, debug_mode: bool):
@@ -271,13 +313,20 @@ def parse_csv(filename):
     return histories
 
 
-def create_table_if_not_exists(connection):
+def create_transactions_table_if_not_exists(connection):
     connection.execute('''CREATE TABLE IF NOT EXISTS TRANSACTIONS
          (ID            INTEGER  PRIMARY KEY NOT NULL,
          DATE           TEXT     NOT NULL,
          DATE_EPOCH     INTEGER  NOT NULL,
          LABEL          TEXT,
          AMOUNT         REAL);''')
+
+
+def create_checkpoints_table_if_not_exists(connection):
+    connection.execute('''CREATE TABLE IF NOT EXISTS CHECKPOINTS
+         (DATE_EPOCH     INTEGER  PRIMARY KEY NOT NULL,
+         DATE            TEXT     NOT NULL,
+         BALANCE         REAL);''')
 
 
 def print_usage_and_exit():
@@ -287,12 +336,14 @@ def print_usage_and_exit():
 
 def process_import(filename, dry_run_mode: bool, debug_mode: bool):
     main(filename, dry_run_mode, debug_mode)
+    print()
 
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == IMPORT_FLAG:
-        dry_run = (len(sys.argv) >= 4 and sys.argv[3] == '--dry-run') or (len(sys.argv) == 5 and sys.argv[4] == '--dry-run')
-        debug = (len(sys.argv) >= 4 and sys.argv[3] == '--debug') or (len(sys.argv) == 5 and sys.argv[4] == '--debug')
+        dry_run = (len(sys.argv) >= 4 and sys.argv[3] == DRY_RUN_FLAG) or (
+                    len(sys.argv) == 5 and sys.argv[4] == DRY_RUN_FLAG)
+        debug = (len(sys.argv) >= 4 and sys.argv[3] == DEBUG_FLAG) or (len(sys.argv) == 5 and sys.argv[4] == DEBUG_FLAG)
         try:
             config.read("conf/properties.ini")
         except Exception as e:
