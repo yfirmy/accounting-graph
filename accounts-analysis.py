@@ -106,6 +106,19 @@ def draw_balance_evolution(account_id, balance, min_date, max_date,
     plt.show()
 
 
+def last_non_none(lst):
+    i = len(lst) - 1
+    for item in reversed(lst):
+        if item is not None:
+            return i, item
+        i = i-1
+    return None, None
+
+
+def count_non_none(lst):
+    return sum(1 for item in lst if item is not None)
+
+
 # Multi-Month Daily Bank Balance Trend Graph
 # comparing daily bank balances across multiple months
 def draw_balance_comparison(account_id, balance_compared):
@@ -125,8 +138,10 @@ def draw_balance_comparison(account_id, balance_compared):
     axes.grid(True)
     axes.set_title("Comparaison du solde - " + get_account_name(account_id) + " (" + str(account_id) + ")")
     axes.set_ylabel(r'Solde')
-    last_day = len(balance_compared[0]) - 1
-    last_balance = balance_compared[0][last_day]
+
+    last_month = 0 if count_non_none(balance_compared[0]) >= 1 else 1
+    last_day, last_balance = last_non_none(balance_compared[last_month])
+
     plt.plot(last_day, last_balance, marker='x', color='red')
     plt.text(last_day, last_balance + 10, " " + "{:.2f}".format(last_balance) + " " + CURRENCY, color="red")
     plt.show()
@@ -259,8 +274,7 @@ def parse_file(filename):
 
 
 def process_history(new_account_statements, dry_run_mode: bool, debug_mode: bool):
-    new_list = sorted(new_account_statements, key=lambda x: x.account_id, reverse=False)
-    for new_account_statement in new_list:
+    for new_account_statement in new_account_statements:
         with open_database_connection(new_account_statement.account_id) as connection:
             prepare_and_analyse_history(new_account_statement, connection, dry_run_mode, debug_mode)
 
@@ -326,8 +340,8 @@ def parse_ofx(filename):
 
 
 def parse_csv(filename):
-    histories = []
-    history = AccountStatement(0)
+    parsed_account_statements = []
+    account_statement = AccountStatement(0)
     with open(filename, 'r', encoding="ISO 8859-1") as csvFile:
         account_reader = csv.reader(csvFile, delimiter=';', quotechar='"')
         pattern_last_balance = re.compile(r'Solde au ([0-3][0-9]\/[0-1][0-9]\/[1-2][0-9]{3}) ([\d+\xa0]*\d+,\d\d) \x80')
@@ -336,8 +350,8 @@ def parse_csv(filename):
             if len(row) == 1:
                 match_last_balance = pattern_last_balance.match(row[0])
                 if match_last_balance:
-                    history.last_balance = float(match_last_balance.group(2).replace(',', '.').replace('\xa0', ''))
-                    history.last_date = datetime.datetime.strptime(match_last_balance.group(1), '%d/%m/%Y').date()
+                    account_statement.last_balance = float(match_last_balance.group(2).replace(',', '.').replace('\xa0', ''))
+                    account_statement.last_date = datetime.datetime.strptime(match_last_balance.group(1), '%d/%m/%Y').date()
             if len(row) >= 4:
                 match_operation = pattern_operation.match(row[0])
                 if match_operation:
@@ -345,9 +359,9 @@ def parse_csv(filename):
                     debit = parse_double(row[2])
                     credit = parse_double(row[3])
                     transaction_amount = -debit if debit > 0.0 else credit
-                    history.add(Operation(None, transaction_date, row[1], transaction_amount))
-    histories.append(history)
-    return histories
+                    account_statement.add(Operation(None, transaction_date, row[1], transaction_amount))
+    parsed_account_statements.append(account_statement)
+    return parsed_account_statements
 
 
 def create_transactions_table_if_not_exists(connection):
