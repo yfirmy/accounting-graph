@@ -121,17 +121,34 @@ def count_non_none(lst):
 
 # Multi-Month Daily Bank Balance Trend Graph
 # comparing daily bank balances across multiple months
+def stats_same_day(balance_compared, day):
+    values_same_day = list(map(lambda balance_for_month: balance_for_month[day], balance_compared))
+    filtered_values_same_day = list(filter(lambda v: v is not None, values_same_day))
+    mean_value_same_day = sum(filtered_values_same_day) / len(filtered_values_same_day)
+    min_value_same_day = min(filtered_values_same_day)
+    max_value_same_day = max(filtered_values_same_day)
+    return min_value_same_day, max_value_same_day, mean_value_same_day
+
+
+def spot_value(x, y, marker, markercolor, textcolor, label, alignment, plt):
+    plt.plot(x, y, marker=marker, color=markercolor)
+    plt.text(x, y + 10, " " + label + "{:.2f}".format(y) + " " + CURRENCY + " ", color=textcolor, horizontalalignment=alignment)
+
+
 def draw_balance_comparison(account_id, balance_compared):
+    min_grey_intensity = 0.85
+    max_grey_intensity = 0.35
+    a = (max_grey_intensity - min_grey_intensity) / (len(balance_compared) - 1)
     fig, axes = plt.subplots()
     fig.set_figwidth(20)
-    for month_age in reversed(range(0, 12)):
+    for month_age in reversed(range(0, len(balance_compared))):
         if month_age == 0:
             color = "red"
         else:
-            color_intensity = 0.52 + (month_age * (1 / 28))  # 0.9 - (m * (1/24))
+            color_intensity = max_grey_intensity - month_age * a
             color = (color_intensity, color_intensity, color_intensity)
         if month_age < len(balance_compared):
-            plt.plot(range(0, len(balance_compared[month_age])), balance_compared[month_age], color=color)
+            plt.plot(range(1, len(balance_compared[month_age])), balance_compared[month_age][1:], color=color)
     plt.hlines(y=0, xmin=1, xmax=31, colors='grey', linestyles='--')
     axes.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=(0, 1, 2, 3, 4, 5, 6)))
     axes.xaxis.set_minor_locator(mdates.DayLocator())
@@ -142,8 +159,14 @@ def draw_balance_comparison(account_id, balance_compared):
     last_month = 0 if count_non_none(balance_compared[0]) >= 1 else 1
     last_day, last_balance = last_non_none(balance_compared[last_month])
 
-    plt.plot(last_day, last_balance, marker='x', color='red')
-    plt.text(last_day, last_balance + 10, " " + "{:.2f}".format(last_balance) + " " + CURRENCY, color="red")
+    spot_value(last_day, last_balance, "x", "red", "red", "", "left", plt)
+
+    min_value_same_day, max_value_same_day, mean_value_same_day = stats_same_day(balance_compared, last_day)
+
+    spot_value(last_day, min_value_same_day, "+", "grey", "darkgrey", "min: ", "right", plt)
+    spot_value(last_day, max_value_same_day, "+", "grey", "darkgrey", "max: ", "right", plt)
+    spot_value(last_day, mean_value_same_day, "+", "grey", "darkgrey", "moy: ", "right", plt)
+
     plt.show()
 
 
