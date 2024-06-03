@@ -210,7 +210,7 @@ def check_balance_in_checkpoints(date, balance, cur):
     if row is None:
         return True, None
     else:
-        return (len(row) == 3 and float(row[2]) == balance), float(row[2])
+        return len(row) == 3 and abs(float(row[2]) - balance) <= 0.00001, float(row[2])
 
 
 def balance_health_check(acc_statement, balance_over_time, connection):
