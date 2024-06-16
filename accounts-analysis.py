@@ -9,6 +9,7 @@ import sys
 import configparser
 
 import dateutil
+import dateutil.relativedelta
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from ofxparse import OfxParser
@@ -66,6 +67,14 @@ def get_account_name(account_id):
     finally:
         return account_name if account_name else ""
 
+def is_savings_account(account_id):
+    is_savings_account = False
+    try:
+        is_savings_account = config.getboolean('Savings accounts', str(account_id))
+    except Exception as ex:
+        print("Failed to retrieve the name of account " + str(account_id), str(ex))
+    finally:
+        return is_savings_account if is_savings_account else False
 
 def analyse_operations(history, connection, debug_mode: bool):
     (balance_over_time, min_date, max_date,
@@ -73,6 +82,9 @@ def analyse_operations(history, connection, debug_mode: bool):
      max_balance, max_balance_date) = compute_balance_evolution(history, connection, debug_mode)
     draw_balance_evolution(history.account_id, balance_over_time, min_date, max_date,
                            min_balance, min_balance_date, max_balance, max_balance_date)
+    if is_savings_account(history.account_id):
+        balance_derivative = compute_savings_derivative(balance_over_time, min_date, max_date)
+        draw_savings_derivative(history.account_id, balance_derivative, min_date, max_date)
     balance_compared = compute_balance_compared(balance_over_time, history.last_date)
     draw_balance_comparison(history.account_id, balance_compared)
 
@@ -134,6 +146,24 @@ def spot_value(x, y, marker, markercolor, textcolor, label, alignment, plt):
     plt.plot(x, y, marker=marker, color=markercolor)
     plt.text(x, y + 10, " " + label + "{:.2f}".format(y) + " " + CURRENCY + " ", color=textcolor, horizontalalignment=alignment)
 
+def draw_savings_derivative(account_id, savings_derivative, min_date, max_date):
+    fig, axes = plt.subplots()
+    fig.set_figwidth(20)
+    lists = sorted(savings_derivative.items())
+    x, y = zip(*lists)
+    savings_color = [{p<0: 'red', 0<=p<=2: 'orange', p>2: 'green'}[True] for p in y]
+    axes.bar(x, y, width=8.0, color=savings_color)
+    axes.set_title("Epargne par mois - " + get_account_name(account_id) + " (" + str(account_id) + ")")
+    axes.xaxis.set_major_locator(mdates.MonthLocator())
+    #axes.xaxis.set_minor_locator(mdates.MonthLocator())
+    axes.grid(True)
+    axes.set_ylabel(r'Epargne')
+    plt.hlines(y=0, xmin=min_date, xmax=max_date, colors='grey', linestyles='--')
+    for item in savings_derivative:
+        label = "+" if savings_derivative[item] > 0 else "" if savings_derivative[item] < 0 else ""
+        color = "green" if savings_derivative[item] > 0 else "red" if savings_derivative[item] < 0 else "black"
+        spot_value(item, savings_derivative[item], "", color, color, label, "center", plt)
+    plt.show()
 
 def draw_balance_comparison(account_id, balance_compared):
     min_grey_intensity = 0.85
@@ -202,6 +232,29 @@ def compute_balance_evolution(account_statement, connection, debug_mode: bool):
             min_date, account_statement.last_date,
             min_balance, min_balance_date,
             max_balance, max_balance_date)
+
+
+def compute_savings_derivative(balance_over_time, min_date, max_date):
+    savings_derivative = {}
+    timestamps = list(balance_over_time.keys())
+    first_timestamp = timestamps[len(timestamps)-1] #.replace(day=10)
+    last_timestamp = timestamps[0]
+    print("first_timestamp = " + first_timestamp.strftime("%d/%m/%Y"))
+    print("last_timestamp = " + last_timestamp.strftime("%d/%m/%Y"))
+    timespan = dateutil.relativedelta.relativedelta(last_timestamp, first_timestamp);
+    months_list = [first_timestamp + dateutil.relativedelta.relativedelta(months=x)
+                     for x in range(0, timespan.years*12 + timespan.months + 1)]
+    previous_timestamp = None
+
+    for timestamp in months_list:
+        if (previous_timestamp is not None and
+                timestamp in balance_over_time and
+                previous_timestamp in balance_over_time):
+            savings_derivative[timestamp] = balance_over_time[timestamp] - balance_over_time[previous_timestamp]
+            print(timestamp.strftime("%d/%m/%Y") + ": " + str(savings_derivative[timestamp]))
+        previous_timestamp = timestamp
+
+    return savings_derivative
 
 
 def check_balance_in_checkpoints(date, balance, cur):
@@ -311,8 +364,8 @@ def prepare_and_analyse_history(new_history, connection, dry_run_mode: bool, deb
         write_operations_in_database(new_history, connection)
         whole_history = read_transactions_from_database(new_history.account_id, connection)
         update_history_details(new_history, whole_history)
-        update_checkpoints(whole_history, connection)
         analyse_operations(whole_history, connection, debug_mode)
+        update_checkpoints(whole_history, connection)
 
 
 def update_history_details(new_history, whole_history):
