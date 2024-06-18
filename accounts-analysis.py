@@ -67,14 +67,16 @@ def get_account_name(account_id):
     finally:
         return account_name if account_name else ""
 
+
 def is_savings_account(account_id):
-    is_savings_account = False
+    is_savings_account_param = False
     try:
-        is_savings_account = config.getboolean('Savings accounts', str(account_id))
+        is_savings_account_param = config.getboolean('Savings accounts', str(account_id))
     except Exception as ex:
         print("Failed to retrieve the name of account " + str(account_id), str(ex))
     finally:
-        return is_savings_account if is_savings_account else False
+        return is_savings_account_param if is_savings_account_param else False
+
 
 def analyse_operations(history, connection, debug_mode: bool):
     (balance_over_time, min_date, max_date,
@@ -114,7 +116,8 @@ def draw_balance_evolution(account_id, balance, min_date, max_date,
     plt.text(max_balance_date, max_balance + offset, " " + "{:.2f}".format(max_balance) + " " + CURRENCY, color="red",
              verticalalignment='bottom')
     plt.plot(max_date, last_balance, marker='x', color='black')
-    plt.text(max_date, last_balance + offset, " " + "{:.2f}".format(last_balance) + " " + CURRENCY, color="black")
+    plt.text(max_date, last_balance + offset, " " + "{:.2f}".format(last_balance) + " " + CURRENCY, color="black",
+             verticalalignment='top')
     plt.show()
 
 
@@ -142,9 +145,12 @@ def stats_same_day(balance_compared, day):
     return min_value_same_day, max_value_same_day, mean_value_same_day
 
 
-def spot_value(x, y, marker, markercolor, textcolor, label, alignment, plt):
-    plt.plot(x, y, marker=marker, color=markercolor)
-    plt.text(x, y + 10, " " + label + "{:.2f}".format(y) + " " + CURRENCY + " ", color=textcolor, horizontalalignment=alignment)
+def spot_value(x, y, marker, marker_color, text_color, label, h_alignment, plt, v_alignment='baseline'):
+    plt.plot(x, y, marker=marker, color=marker_color)
+    offset = 10 if y >= 0 else -15
+    plt.text(x, y + offset, " " + label + "{:.2f}".format(y) + " " + CURRENCY + " ",
+             color=text_color, horizontalalignment=h_alignment, verticalalignment=v_alignment)
+
 
 def draw_savings_derivative(account_id, savings_derivative, min_date, max_date):
     fig, axes = plt.subplots()
@@ -162,8 +168,10 @@ def draw_savings_derivative(account_id, savings_derivative, min_date, max_date):
     for item in savings_derivative:
         label = "+" if savings_derivative[item] > 0 else "" if savings_derivative[item] < 0 else ""
         color = "green" if savings_derivative[item] > 0 else "red" if savings_derivative[item] < 0 else "black"
-        spot_value(item, savings_derivative[item], "", color, color, label, "center", plt)
+        vertical_alignment = "bottom" if savings_derivative[item] > 0 else "top"
+        spot_value(item, savings_derivative[item], "", color, color, label, "center", plt, vertical_alignment)
     plt.show()
+
 
 def draw_balance_comparison(account_id, balance_compared):
     min_grey_intensity = 0.85
@@ -189,13 +197,13 @@ def draw_balance_comparison(account_id, balance_compared):
     last_month = 0 if count_non_none(balance_compared[0]) >= 1 else 1
     last_day, last_balance = last_non_none(balance_compared[last_month])
 
-    spot_value(last_day, last_balance, "x", "red", "red", "", "left", plt)
+    spot_value(last_day, last_balance, "x", "red", "red", "", "left", plt, "bottom")
 
     min_value_same_day, max_value_same_day, mean_value_same_day = stats_same_day(balance_compared, last_day)
 
-    spot_value(last_day, min_value_same_day, "+", "grey", "darkgrey", "min: ", "right", plt)
-    spot_value(last_day, max_value_same_day, "+", "grey", "darkgrey", "max: ", "right", plt)
-    spot_value(last_day, mean_value_same_day, "+", "grey", "darkgrey", "moy: ", "right", plt)
+    spot_value(last_day, min_value_same_day, "+", "grey", "darkgrey", "min: ", "right", plt, "bottom")
+    spot_value(last_day, max_value_same_day, "+", "grey", "darkgrey", "max: ", "right", plt, "bottom")
+    spot_value(last_day, mean_value_same_day, "+", "grey", "darkgrey", "moy: ", "right", plt, "bottom")
 
     plt.show()
 
@@ -239,8 +247,6 @@ def compute_savings_derivative(balance_over_time, min_date, max_date):
     timestamps = list(balance_over_time.keys())
     first_timestamp = timestamps[len(timestamps)-1] #.replace(day=10)
     last_timestamp = timestamps[0]
-    print("first_timestamp = " + first_timestamp.strftime("%d/%m/%Y"))
-    print("last_timestamp = " + last_timestamp.strftime("%d/%m/%Y"))
     timespan = dateutil.relativedelta.relativedelta(last_timestamp, first_timestamp);
     months_list = [first_timestamp + dateutil.relativedelta.relativedelta(months=x)
                      for x in range(0, timespan.years*12 + timespan.months + 1)]
@@ -251,7 +257,7 @@ def compute_savings_derivative(balance_over_time, min_date, max_date):
                 timestamp in balance_over_time and
                 previous_timestamp in balance_over_time):
             savings_derivative[timestamp] = balance_over_time[timestamp] - balance_over_time[previous_timestamp]
-            print(timestamp.strftime("%d/%m/%Y") + ": " + str(savings_derivative[timestamp]))
+            #print(timestamp.strftime("%d/%m/%Y") + ": " + str(savings_derivative[timestamp]))
         previous_timestamp = timestamp
 
     return savings_derivative
