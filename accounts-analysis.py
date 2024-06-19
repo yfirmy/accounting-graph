@@ -78,17 +78,17 @@ def is_savings_account(account_id):
         return is_savings_account_param if is_savings_account_param else False
 
 
-def analyse_operations(history, connection, debug_mode: bool):
+def analyse_operations(statements, connection, debug_mode: bool):
     (balance_over_time, min_date, max_date,
      min_balance, min_balance_date,
-     max_balance, max_balance_date) = compute_balance_evolution(history, connection, debug_mode)
-    draw_balance_evolution(history.account_id, balance_over_time, min_date, max_date,
+     max_balance, max_balance_date) = compute_balance_evolution(statements, connection, debug_mode)
+    draw_balance_evolution(statements.account_id, balance_over_time, min_date, max_date,
                            min_balance, min_balance_date, max_balance, max_balance_date)
-    if is_savings_account(history.account_id):
+    if is_savings_account(statements.account_id):
         balance_derivative = compute_savings_derivative(balance_over_time, min_date, max_date)
-        draw_savings_derivative(history.account_id, balance_derivative, min_date, max_date)
-    balance_compared = compute_balance_compared(balance_over_time, history.last_date)
-    draw_balance_comparison(history.account_id, balance_compared)
+        draw_savings_derivative(statements.account_id, balance_derivative, min_date, max_date)
+    balance_compared = compute_balance_compared(balance_over_time, statements.last_date)
+    draw_balance_comparison(statements.account_id, balance_compared)
 
 
 def draw_balance_evolution(account_id, balance, min_date, max_date,
@@ -168,7 +168,7 @@ def draw_savings_derivative(account_id, savings_derivative, min_date, max_date):
     for item in savings_derivative:
         label = "+" if savings_derivative[item] > 0 else "" if savings_derivative[item] < 0 else ""
         color = "green" if savings_derivative[item] > 0 else "red" if savings_derivative[item] < 0 else "black"
-        vertical_alignment = "bottom" if savings_derivative[item] > 0 else "top"
+        vertical_alignment = "bottom" if savings_derivative[item] >= 0 else "top"
         spot_value(item, savings_derivative[item], "", color, color, label, "center", plt, vertical_alignment)
     plt.show()
 
@@ -355,7 +355,7 @@ def parse_file(filename):
         raise ValueError("Invalid file format")
 
 
-def process_history(new_account_statements, dry_run_mode: bool, debug_mode: bool):
+def process_statements(new_account_statements, dry_run_mode: bool, debug_mode: bool):
     for new_account_statement in new_account_statements:
         with open_database_connection(new_account_statement.account_id) as connection:
             prepare_and_analyse_history(new_account_statement, connection, dry_run_mode, debug_mode)
@@ -390,7 +390,7 @@ def update_checkpoints(acc_statement, connection):
 
 def main(filename, dry_run_mode: bool, debug_mode: bool):
     new_account_statements = parse_file(filename)
-    process_history(new_account_statements, dry_run_mode, debug_mode)
+    process_statements(new_account_statements, dry_run_mode, debug_mode)
 
 
 def parse_ofx(filename):
@@ -401,6 +401,10 @@ def parse_ofx(filename):
             account_statement = AccountStatement(account.account_id)
             statement = account.statement
             print("\nAccount " + account.account_id + " \"" + get_account_name(account.account_id) + "\": ")
+            account_statement.last_date = statement.end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            account_statement.last_balance = float(statement.balance)
+            print("Balance on " + account_statement.last_date.strftime("%d/%m/%Y") + ": "
+                  + str(account_statement.last_balance) + " " + CURRENCY)
             if len(statement.transactions) == 0:
                 print("WARNING: No transaction in this file for account " + str(account.account_id) +
                       " - " + get_account_name(account.account_id))
@@ -412,9 +416,6 @@ def parse_ofx(filename):
                                           transaction.amount)
                     print(operation.debug());
                     account_statement.add(operation)
-
-            account_statement.last_date = statement.end_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            account_statement.last_balance = float(statement.balance)
             parsed_account_statements.append(account_statement)
 
     print()
