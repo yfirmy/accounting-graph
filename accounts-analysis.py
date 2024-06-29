@@ -93,6 +93,10 @@ def analyse_operations(statements, connection, debug_mode: bool):
     draw_balance_comparison(statements.account_id, balance_compared)
 
 
+def format_amount(value):
+    return "{:,.2f}".format(value).replace(',', ' ').replace('.', ',') + " " + CURRENCY
+
+
 def draw_balance_evolution(account_id, balance, min_date, max_date,
                            min_balance, min_balance_date, max_balance, max_balance_date):
 
@@ -112,13 +116,13 @@ def draw_balance_evolution(account_id, balance, min_date, max_date,
     axes.set_ylabel(r'Solde')
     plt.hlines(y=0, xmin=min_date, xmax=max_date, colors='grey', linestyles='--')
     plt.plot(min_balance_date, min_balance, marker='x', color="blue")
-    plt.text(min_balance_date, min_balance - offset, " " + "{:.2f}".format(min_balance) + " " + CURRENCY, color="blue",
+    plt.text(min_balance_date, min_balance - offset, " " + format_amount(min_balance), color="blue",
              verticalalignment='top')
     plt.plot(max_balance_date, max_balance, marker='x', color="red")
-    plt.text(max_balance_date, max_balance + offset, " " + "{:.2f}".format(max_balance) + " " + CURRENCY, color="red",
+    plt.text(max_balance_date, max_balance + offset, " " + format_amount(max_balance), color="red",
              verticalalignment='bottom')
     plt.plot(max_date, last_balance, marker='x', color='black')
-    plt.text(max_date, last_balance + offset, " " + "{:.2f}".format(last_balance) + " " + CURRENCY, color="black",
+    plt.text(max_date, last_balance + offset, " " + format_amount(last_balance), color="black",
              verticalalignment='top')
     plt.show()
 
@@ -150,7 +154,7 @@ def stats_same_day(balance_compared, day):
 def spot_value(x, y, marker, marker_color, text_color, label, h_alignment, plt, v_alignment='baseline'):
     plt.plot(x, y, marker=marker, color=marker_color)
     offset = 10 if y >= 0 else -15
-    plt.text(x, y + offset, " " + label + "{:.2f}".format(y) + " " + CURRENCY + " ",
+    plt.text(x, y + offset, " " + label + format_amount(y),
              color=text_color, horizontalalignment=h_alignment, verticalalignment=v_alignment)
 
 
