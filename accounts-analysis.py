@@ -10,6 +10,8 @@ import configparser
 
 import dateutil
 import dateutil.relativedelta
+import calendar
+
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from ofxparse import OfxParser
@@ -85,7 +87,7 @@ def analyse_operations(statements, connection, debug_mode: bool):
     draw_balance_evolution(statements.account_id, balance_over_time, min_date, max_date,
                            min_balance, min_balance_date, max_balance, max_balance_date)
     if is_savings_account(statements.account_id):
-        balance_derivative = compute_savings_derivative(balance_over_time, min_date, max_date)
+        balance_derivative = compute_savings_derivative(balance_over_time)
         draw_savings_derivative(statements.account_id, balance_derivative, min_date, max_date)
     balance_compared = compute_balance_compared(balance_over_time, statements.last_date)
     draw_balance_comparison(statements.account_id, balance_compared)
@@ -242,22 +244,26 @@ def compute_balance_evolution(account_statement, connection, debug_mode: bool):
             max_balance, max_balance_date)
 
 
-def compute_savings_derivative(balance_over_time, min_date, max_date):
+def compute_savings_derivative(balance_over_time):
     savings_derivative = {}
     timestamps = list(balance_over_time.keys())
-    first_timestamp = timestamps[len(timestamps)-1] #.replace(day=10)
+    first_timestamp = timestamps[len(timestamps)-1]
+    first_month = first_timestamp.replace(day=28, hour=0, minute=0, second=0, microsecond=0)
     last_timestamp = timestamps[0]
-    timespan = dateutil.relativedelta.relativedelta(last_timestamp, first_timestamp);
-    months_list = [first_timestamp + dateutil.relativedelta.relativedelta(months=x)
+    timespan = dateutil.relativedelta.relativedelta(last_timestamp, first_timestamp)
+    months_list = [first_month + dateutil.relativedelta.relativedelta(months=x)
                      for x in range(0, timespan.years*12 + timespan.months + 1)]
+    if first_timestamp not in months_list:
+        months_list.insert(0, first_timestamp)
     previous_timestamp = None
 
     for timestamp in months_list:
         if (previous_timestamp is not None and
                 timestamp in balance_over_time and
                 previous_timestamp in balance_over_time):
-            savings_derivative[timestamp] = balance_over_time[timestamp] - balance_over_time[previous_timestamp]
-            #print(timestamp.strftime("%d/%m/%Y") + ": " + str(savings_derivative[timestamp]))
+            _, month_size = calendar.monthrange(timestamp.year, timestamp.month)
+            display_date = timestamp.replace(day=int(month_size/2)+1)
+            savings_derivative[display_date] = balance_over_time[timestamp] - balance_over_time[previous_timestamp]
         previous_timestamp = timestamp
 
     return savings_derivative
