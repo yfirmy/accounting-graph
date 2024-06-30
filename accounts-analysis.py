@@ -18,6 +18,7 @@ from ofxparse import OfxParser
 
 MONTHS_IN_YEAR = 12
 DAYS_IN_MONTH = 31
+PAY_DAY = 28
 IMPORT_FLAG = "--import"
 DRY_RUN_FLAG = "--dry-run"
 DEBUG_FLAG = "--debug"
@@ -88,7 +89,7 @@ def analyse_operations(statements, connection, debug_mode: bool):
                            min_balance, min_balance_date, max_balance, max_balance_date)
     if is_savings_account(statements.account_id):
         balance_derivative = compute_savings_derivative(balance_over_time)
-        draw_savings_derivative(statements.account_id, balance_derivative, min_date, max_date)
+        draw_savings_derivative(statements.account_id, balance_derivative)
     balance_compared = compute_balance_compared(balance_over_time, statements.last_date)
     draw_balance_comparison(statements.account_id, balance_compared)
 
@@ -158,10 +159,15 @@ def spot_value(x, y, marker, marker_color, text_color, label, h_alignment, plt, 
              color=text_color, horizontalalignment=h_alignment, verticalalignment=v_alignment)
 
 
-def draw_savings_derivative(account_id, savings_derivative, min_date, max_date):
+def draw_savings_derivative(account_id, savings_derivative):
     fig, axes = plt.subplots()
     fig.set_figwidth(20)
     lists = sorted(savings_derivative.items())
+    timestamps = list(savings_derivative.keys())
+    min_date = timestamps[0].replace(day=1)
+    max_date = timestamps[len(timestamps)-1]
+    max_date = max_date.replace(day=1) + dateutil.relativedelta.relativedelta(months=1)
+
     x, y = zip(*lists)
     savings_color = [{p<0: 'red', 0<=p<=2: 'orange', p>2: 'green'}[True] for p in y]
     axes.bar(x, y, width=8.0, color=savings_color)
@@ -252,13 +258,15 @@ def compute_savings_derivative(balance_over_time):
     savings_derivative = {}
     timestamps = list(balance_over_time.keys())
     first_timestamp = timestamps[len(timestamps)-1]
-    first_month = first_timestamp.replace(day=28, hour=0, minute=0, second=0, microsecond=0)
+    first_month = first_timestamp.replace(day=PAY_DAY, hour=0, minute=0, second=0, microsecond=0)
     last_timestamp = timestamps[0]
     timespan = dateutil.relativedelta.relativedelta(last_timestamp, first_timestamp)
     months_list = [first_month + dateutil.relativedelta.relativedelta(months=x)
                      for x in range(0, timespan.years*12 + timespan.months + 1)]
     if first_timestamp not in months_list:
         months_list.insert(0, first_timestamp)
+    if last_timestamp not in months_list:
+        months_list.append(last_timestamp)
     previous_timestamp = None
 
     for timestamp in months_list:
@@ -266,7 +274,10 @@ def compute_savings_derivative(balance_over_time):
                 timestamp in balance_over_time and
                 previous_timestamp in balance_over_time):
             _, month_size = calendar.monthrange(timestamp.year, timestamp.month)
-            display_date = timestamp.replace(day=int(month_size/2)+1)
+            display_month = (timestamp.month - 1) if timestamp == first_timestamp \
+                else timestamp.month + 1 if timestamp == last_timestamp \
+                else timestamp.month
+            display_date = timestamp.replace(day=int(month_size/2)+1, month=display_month)
             savings_derivative[display_date] = balance_over_time[timestamp] - balance_over_time[previous_timestamp]
         previous_timestamp = timestamp
 
@@ -424,7 +435,7 @@ def parse_ofx(filename):
                                           transaction.date,
                                           transaction.memo,
                                           transaction.amount)
-                    print(operation.debug());
+                    print(operation.debug())
                     account_statement.add(operation)
             parsed_account_statements.append(account_statement)
 
@@ -463,7 +474,8 @@ def create_transactions_table_if_not_exists(connection):
          DATE           TEXT     NOT NULL,
          DATE_EPOCH     INTEGER  NOT NULL,
          LABEL          TEXT,
-         AMOUNT         REAL);''')
+         AMOUNT         REAL,
+         TAG            TEXT);''')
 
 
 def create_checkpoints_table_if_not_exists(connection):
