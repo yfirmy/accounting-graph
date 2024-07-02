@@ -173,7 +173,6 @@ def draw_savings_derivative(account_id, savings_derivative):
     axes.bar(x, y, width=8.0, color=savings_color)
     axes.set_title("Epargne par mois - " + get_account_name(account_id) + " (" + str(account_id) + ")")
     axes.xaxis.set_major_locator(mdates.MonthLocator())
-    #axes.xaxis.set_minor_locator(mdates.MonthLocator())
     axes.grid(True)
     axes.set_ylabel(r'Epargne')
     plt.hlines(y=0, xmin=min_date, xmax=max_date, colors='grey', linestyles='--')
@@ -275,7 +274,7 @@ def compute_savings_derivative(balance_over_time):
                 previous_timestamp in balance_over_time):
             _, month_size = calendar.monthrange(timestamp.year, timestamp.month)
             display_month = (timestamp.month - 1) if timestamp == first_timestamp \
-                else timestamp.month + 1 if timestamp == last_timestamp \
+                else timestamp.month + 1 if timestamp == last_timestamp and timestamp.day > PAY_DAY \
                 else timestamp.month
             display_date = timestamp.replace(day=int(month_size/2)+1, month=display_month)
             savings_derivative[display_date] = balance_over_time[timestamp] - balance_over_time[previous_timestamp]
