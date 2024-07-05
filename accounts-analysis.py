@@ -424,11 +424,12 @@ def parse_ofx(filename: str):
         for account in ofx.accounts:
             account_statement = AccountStatement(account.account_id)
             statement = account.statement
-            print("\nAccount " + account.account_id + " \"" + get_account_name(account.account_id) + "\": ")
+            print("\n" + '\033[34m' + "Account " + account.account_id + " \"" + get_account_name(account.account_id) +
+                  "\": " + '\033[0m')
             account_statement.last_date = statement.end_date.replace(hour=0, minute=0, second=0, microsecond=0)
             account_statement.last_balance = float(statement.balance)
-            print("Balance on " + account_statement.last_date.strftime("%d/%m/%Y") + ": "
-                  + str(account_statement.last_balance) + " " + CURRENCY)
+            print('\033[94m' + "Balance on " + account_statement.last_date.strftime("%d/%m/%Y") + ": "
+                  + str(account_statement.last_balance) + " " + CURRENCY + '\033[0m')
             if len(statement.transactions) == 0:
                 print("WARNING: No transaction in this file for account " + str(account.account_id) +
                       " - " + get_account_name(account.account_id))
