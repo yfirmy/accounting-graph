@@ -292,20 +292,20 @@ def check_balance_in_checkpoints(date, balance, cur):
         return len(row) == 3 and abs(float(row[2]) - balance) <= 0.00001, float(row[2])
 
 
-def balance_health_check(acc_statement, balance_over_time, connection):
+def balance_health_check(acc_statement: AccountStatement, balance_over_time, connection):
     print("Healthcheck for balance evolution of account " +
           str(acc_statement.account_id) + " - " + get_account_name(acc_statement.account_id))
     cur = connection.cursor()
     for date in balance_over_time:
         coherent_with_checkpoint, previous_balance = check_balance_in_checkpoints(date, balance_over_time[date], cur)
         if not coherent_with_checkpoint:
-            print(date.strftime("%d/%m/%Y") + ": " + str(balance_over_time[date]) +
-                  ": balance does not match previous checkpoint " + str(previous_balance))
+            print('\033[93m' + date.strftime("%d/%m/%Y") + ": " + str(balance_over_time[date]) +
+                  ": balance does not match previous checkpoint " + str(previous_balance) + '\033[0m')
             raise ValueError("Invalid balance in checkpoints")
-    print("OK")
+    print('\033[92m' + "OK" + '\033[0m')
 
 
-def balance_debug(debug_mode: bool, acc_statement, balance_over_time):
+def balance_debug(debug_mode: bool, acc_statement: AccountStatement, balance_over_time):
     if debug_mode:
         print("Balance for account " + str(acc_statement.account_id) + " - " + get_account_name(
             acc_statement.account_id), )
@@ -362,11 +362,11 @@ def read_transactions_from_database(account_id, connection):
     return account_statement
 
 
-def open_database_connection(account_id):
+def open_database_connection(account_id: int):
     return sqlite3.connect('db/account_' + str(account_id) + '.db')
 
 
-def parse_file(filename):
+def parse_file(filename: str):
     if filename.endswith("ofx"):
         return parse_ofx(filename)
     elif filename.endswith("csv"):
@@ -381,25 +381,29 @@ def process_statements(new_account_statements, dry_run_mode: bool, debug_mode: b
             prepare_and_analyse_history(new_account_statement, connection, dry_run_mode, debug_mode)
 
 
-def prepare_and_analyse_history(new_history, connection, dry_run_mode: bool, debug_mode: bool):
+def prepare_and_analyse_history(new_statements: AccountStatement, connection, dry_run_mode: bool, debug_mode: bool):
     create_transactions_table_if_not_exists(connection)
     create_checkpoints_table_if_not_exists(connection)
     if dry_run_mode:
-        search_operations_in_database(new_history, connection)
+        search_operations_in_database(new_statements, connection)
     else:
-        write_operations_in_database(new_history, connection)
-        whole_history = read_transactions_from_database(new_history.account_id, connection)
-        update_history_details(new_history, whole_history)
-        analyse_operations(whole_history, connection, debug_mode)
-        update_checkpoints(whole_history, connection)
+        write_operations_in_database(new_statements, connection)
+        whole_statements = read_transactions_from_database(new_statements.account_id, connection)
+        update_statements_details(new_statements, whole_statements)
+        try:
+            analyse_operations(whole_statements, connection, debug_mode)
+            update_checkpoints(whole_statements, connection)
+        except ValueError as e:
+            print('\033[91m' + "Error in analyse operations for account " + str(new_statements.account_id) +
+                  " - " + get_account_name(new_statements.account_id) + ": " + str(e) + '\033[0m')
 
 
-def update_history_details(new_history, whole_history):
+def update_statements_details(new_history: AccountStatement, whole_history: AccountStatement):
     whole_history.last_date = new_history.last_date
     whole_history.last_balance = new_history.last_balance
 
 
-def update_checkpoints(acc_statement, connection):
+def update_checkpoints(acc_statement: AccountStatement, connection):
     last_balance = acc_statement.last_balance
     last_date = acc_statement.last_date
     request = "INSERT OR IGNORE INTO CHECKPOINTS (DATE_EPOCH, DATE, BALANCE) VALUES \
@@ -408,12 +412,12 @@ def update_checkpoints(acc_statement, connection):
     connection.commit()
 
 
-def main(filename, dry_run_mode: bool, debug_mode: bool):
+def main(filename: str, dry_run_mode: bool, debug_mode: bool):
     new_account_statements = parse_file(filename)
     process_statements(new_account_statements, dry_run_mode, debug_mode)
 
 
-def parse_ofx(filename):
+def parse_ofx(filename: str):
     parsed_account_statements = []
     with open(filename, 'r', encoding="cp1252") as ofxFile:
         ofx = OfxParser.parse(ofxFile)
@@ -442,7 +446,7 @@ def parse_ofx(filename):
     return parsed_account_statements
 
 
-def parse_csv(filename):
+def parse_csv(filename: str):
     parsed_account_statements = []
     account_statement = AccountStatement(0)
     with open(filename, 'r', encoding="ISO 8859-1") as csvFile:
@@ -489,7 +493,7 @@ def print_usage_and_exit():
     exit(1)
 
 
-def process_import(filename, dry_run_mode: bool, debug_mode: bool):
+def process_import(filename: str, dry_run_mode: bool, debug_mode: bool):
     main(filename, dry_run_mode, debug_mode)
     print()
 
