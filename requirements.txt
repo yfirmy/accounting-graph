@@ -25,4 +25,4 @@ six==1.16.0
 soupsieve==2.5
 virtualenv==20.25.0
 virtualenv-clone==0.5.7
-zipp==3.17.0
+zipp==3.19.1
