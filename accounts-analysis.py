@@ -375,10 +375,35 @@ def parse_file(filename: str):
         raise ValueError("Invalid file format")
 
 
-def process_statements(new_account_statements, dry_run_mode: bool, debug_mode: bool):
+def extract_savings(account_id: int, connection, tag: str):
+    savings = 0
+    if is_savings_account(account_id):
+        request = ("select (select BALANCE from main.CHECKPOINTS order by DATE_EPOCH DESC LIMIT 1) - "
+                   "(select sum(amount) from main.TRANSACTIONS where TAG = '") + tag + "') AS AVAILABLE"
+        cur = connection.cursor()
+        cur.execute(request)
+        row = cur.fetchone()
+        savings = row[0] if row else 0
+    return savings
+
+
+def process_statements(new_account_statements: [AccountStatement], dry_run_mode: bool, debug_mode: bool, tag: str):
+    savings = {}
     for new_account_statement in new_account_statements:
         with open_database_connection(new_account_statement.account_id) as connection:
             prepare_and_analyse_history(new_account_statement, connection, dry_run_mode, debug_mode)
+            if is_savings_account(new_account_statement.account_id):
+                savings[new_account_statement.account_id] = extract_savings(new_account_statement.account_id, connection, tag)
+    report_savings(savings)
+
+
+def report_savings(savings):
+    print('\n' + '\033[33m' + "Savings summary:" + '\033[0m')
+    total_savings = 0
+    for savings_account in savings:
+        total_savings += savings[savings_account]
+        print("  Savings for account " + str(savings_account) + ": " + format_amount(savings[savings_account]))
+    print('\n' + '\033[33m' + "Total savings: " + format_amount(total_savings) + '\033[0m')
 
 
 def prepare_and_analyse_history(new_statements: AccountStatement, connection, dry_run_mode: bool, debug_mode: bool):
@@ -412,9 +437,9 @@ def update_checkpoints(acc_statement: AccountStatement, connection):
     connection.commit()
 
 
-def main(filename: str, dry_run_mode: bool, debug_mode: bool):
+def main(filename: str, dry_run_mode: bool, debug_mode: bool, tag: str):
     new_account_statements = parse_file(filename)
-    process_statements(new_account_statements, dry_run_mode, debug_mode)
+    process_statements(new_account_statements, dry_run_mode, debug_mode, tag)
 
 
 def parse_ofx(filename: str):
@@ -494,8 +519,8 @@ def print_usage_and_exit():
     exit(1)
 
 
-def process_import(filename: str, dry_run_mode: bool, debug_mode: bool):
-    main(filename, dry_run_mode, debug_mode)
+def process_import(filename: str, dry_run_mode: bool, debug_mode: bool, tag: str):
+    main(filename, dry_run_mode, debug_mode, tag)
     print()
 
 
@@ -508,6 +533,6 @@ if __name__ == "__main__":
             config.read("conf/properties.ini")
         except Exception as e:
             print("Failed to load properties configuration file:", str(e))
-        process_import(sys.argv[2], dry_run, debug)
+        process_import(sys.argv[2], dry_run, debug, config.get("Savings tags", "exclude"))
     else:
         print_usage_and_exit()
