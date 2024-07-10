@@ -81,7 +81,7 @@ def is_savings_account(account_id):
         return is_savings_account_param if is_savings_account_param else False
 
 
-def analyse_operations(statements, connection, debug_mode: bool):
+def analyse_operations(statements: AccountStatement, connection, debug_mode: bool):
     (balance_over_time, min_date, max_date,
      min_balance, min_balance_date,
      max_balance, max_balance_date) = compute_balance_evolution(statements, connection, debug_mode)
@@ -219,7 +219,7 @@ def draw_balance_comparison(account_id, balance_compared):
     plt.show()
 
 
-def compute_balance_evolution(account_statement, connection, debug_mode: bool):
+def compute_balance_evolution(account_statement: AccountStatement, connection, debug_mode: bool):
     min_date, max_date = account_statement.get_date_boundaries()
     balance_over_time = {}
     current_date = account_statement.last_date
@@ -259,12 +259,12 @@ def compute_savings_derivative(balance_over_time):
     first_timestamp = timestamps[len(timestamps)-1]
     first_month = first_timestamp.replace(day=PAY_DAY, hour=0, minute=0, second=0, microsecond=0)
     last_timestamp = timestamps[0]
-    timespan = dateutil.relativedelta.relativedelta(last_timestamp, first_timestamp)
+    timespan = dateutil.relativedelta.relativedelta(last_timestamp, first_month)
     months_list = [first_month + dateutil.relativedelta.relativedelta(months=x)
                      for x in range(0, timespan.years*12 + timespan.months + 1)]
-    if first_timestamp not in months_list:
+    if first_timestamp < months_list[0]:
         months_list.insert(0, first_timestamp)
-    if last_timestamp not in months_list:
+    if last_timestamp > months_list[len(months_list) - 1]:
         months_list.append(last_timestamp)
     previous_timestamp = None
 
@@ -272,12 +272,12 @@ def compute_savings_derivative(balance_over_time):
         if (previous_timestamp is not None and
                 timestamp in balance_over_time and
                 previous_timestamp in balance_over_time):
-            _, month_size = calendar.monthrange(timestamp.year, timestamp.month)
-            display_month = (timestamp.month - 1) if timestamp == first_timestamp \
-                else timestamp.month + 1 if timestamp == last_timestamp and timestamp.day > PAY_DAY \
-                else timestamp.month
-            display_date = timestamp.replace(day=int(month_size/2)+1, month=display_month)
+            add_days = 15 if timestamp == last_timestamp and timestamp.day > PAY_DAY else 0
+            display_month = (timestamp + dateutil.relativedelta.relativedelta(days=add_days)).replace(day=1)
+            _, month_size = calendar.monthrange(timestamp.year, display_month.month)
+            display_date = display_month.replace(day=int(month_size/2)+1)
             savings_derivative[display_date] = balance_over_time[timestamp] - balance_over_time[previous_timestamp]
+            print("[" + str(previous_timestamp) + ", " + str(timestamp) + "] -> " + str(display_month) + " ~ " + str(display_date) + ": " + str(savings_derivative[display_date]));
         previous_timestamp = timestamp
 
     return savings_derivative
