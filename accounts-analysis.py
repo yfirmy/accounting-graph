@@ -277,7 +277,6 @@ def compute_savings_derivative(balance_over_time):
             _, month_size = calendar.monthrange(timestamp.year, display_month.month)
             display_date = display_month.replace(day=int(month_size/2)+1)
             savings_derivative[display_date] = balance_over_time[timestamp] - balance_over_time[previous_timestamp]
-            print("[" + str(previous_timestamp) + ", " + str(timestamp) + "] -> " + str(display_month) + " ~ " + str(display_date) + ": " + str(savings_derivative[display_date]));
         previous_timestamp = timestamp
 
     return savings_derivative
