@@ -51,9 +51,13 @@ class AccountStatement:
         self.operations[operation.date].append(operation)
 
     def get_date_boundaries(self):
-        operations_dates = list(self.operations.keys())
-        min_date = operations_dates[len(operations_dates) - 1]
-        max_date = operations_dates[0]
+        min_date = None
+        max_date = None
+        if len(self.operations) > 0:
+            operations_dates = list(self.operations.keys())
+            if len(operations_dates) > 0:
+                min_date = operations_dates[len(operations_dates) - 1]
+                max_date = operations_dates[0]
         return min_date, max_date
 
 
@@ -82,16 +86,17 @@ def is_savings_account(account_id):
 
 
 def analyse_operations(statements: AccountStatement, connection, debug_mode: bool):
-    (balance_over_time, min_date, max_date,
-     min_balance, min_balance_date,
-     max_balance, max_balance_date) = compute_balance_evolution(statements, connection, debug_mode)
-    draw_balance_evolution(statements.account_id, balance_over_time, min_date, max_date,
-                           min_balance, min_balance_date, max_balance, max_balance_date)
-    if is_savings_account(statements.account_id):
-        balance_derivative = compute_savings_derivative(balance_over_time)
-        draw_savings_derivative(statements.account_id, balance_derivative)
-    balance_compared = compute_balance_compared(balance_over_time, statements.last_date)
-    draw_balance_comparison(statements.account_id, balance_compared)
+    if len(statements.operations) > 0:
+        (balance_over_time, min_date, max_date,
+         min_balance, min_balance_date,
+         max_balance, max_balance_date) = compute_balance_evolution(statements, connection, debug_mode)
+        draw_balance_evolution(statements.account_id, balance_over_time, min_date, max_date,
+                               min_balance, min_balance_date, max_balance, max_balance_date)
+        if is_savings_account(statements.account_id):
+            balance_derivative = compute_savings_derivative(balance_over_time)
+            draw_savings_derivative(statements.account_id, balance_derivative)
+        balance_compared = compute_balance_compared(balance_over_time, statements.last_date)
+        draw_balance_comparison(statements.account_id, balance_compared)
 
 
 def format_amount(value):
@@ -382,7 +387,7 @@ def extract_savings(account_id: int, connection, tag: str):
         cur = connection.cursor()
         cur.execute(request)
         row = cur.fetchone()
-        savings = row[0] if row else 0
+        savings = row[0] if row and row[0] else 0
     return savings
 
 
@@ -400,7 +405,7 @@ def report_savings(savings):
     print('\n' + '\033[33m' + "Savings summary:" + '\033[0m')
     total_savings = 0
     for savings_account in savings:
-        total_savings += savings[savings_account]
+        total_savings += savings[savings_account] #if not None else 0)
         print("  Savings for account " + str(savings_account) + ": " + format_amount(savings[savings_account]))
     print('\n' + '\033[33m' + "Total savings: " + format_amount(total_savings) + '\033[0m')
 
