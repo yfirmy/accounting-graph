@@ -22,6 +22,7 @@ PAY_DAY = 28
 IMPORT_FLAG = "--import"
 DRY_RUN_FLAG = "--dry-run"
 DEBUG_FLAG = "--debug"
+CSV_OUTPUT_FLAG = "--csv-output"
 CURRENCY = "€"
 
 config = configparser.RawConfigParser()
@@ -34,8 +35,9 @@ class Operation:
         self.label = label
         self.value = amount
 
-    def debug(self):
-        return self.id + " " + str(self.date) + " " + "{:>8}".format(str(self.value)) + " \"" + self.label + "\""
+    def debug(self, csv_output_mode: bool):
+        separator = ";" if csv_output_mode else " "
+        return self.id + separator + str(self.date) + separator + "{:>8}".format(str(self.value)) + separator + "\"" + self.label + "\""
 
 
 class AccountStatement:
@@ -249,6 +251,7 @@ def compute_balance_evolution(account_statement: AccountStatement, connection, d
 
         current_date = current_date - datetime.timedelta(days=1)
 
+    balance_debug(debug_mode, account_statement, balance_over_time)
     balance_health_check(account_statement, balance_over_time, connection)
     balance_debug(debug_mode, account_statement, balance_over_time)
 
@@ -370,9 +373,9 @@ def open_database_connection(account_id: int):
     return sqlite3.connect('db/account_' + str(account_id) + '.db')
 
 
-def parse_file(filename: str):
+def parse_file(filename: str, csv_output_mode: bool):
     if filename.endswith("ofx"):
-        return parse_ofx(filename)
+        return parse_ofx(filename, csv_output_mode)
     elif filename.endswith("csv"):
         return parse_csv(filename)
     else:
@@ -441,12 +444,12 @@ def update_checkpoints(acc_statement: AccountStatement, connection):
     connection.commit()
 
 
-def main(filename: str, dry_run_mode: bool, debug_mode: bool, tag: str):
-    new_account_statements = parse_file(filename)
+def main(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: bool, tag: str):
+    new_account_statements = parse_file(filename, csv_output_mode)
     process_statements(new_account_statements, dry_run_mode, debug_mode, tag)
 
 
-def parse_ofx(filename: str):
+def parse_ofx(filename: str, csv_output_mode: bool):
     parsed_account_statements = []
     with open(filename, 'r', encoding="cp1252") as ofxFile:
         ofx = OfxParser.parse(ofxFile)
@@ -468,7 +471,7 @@ def parse_ofx(filename: str):
                                           transaction.date,
                                           transaction.memo,
                                           transaction.amount)
-                    print(operation.debug())
+                    print(operation.debug(csv_output_mode))
                     account_statement.add(operation)
             parsed_account_statements.append(account_statement)
 
@@ -523,8 +526,8 @@ def print_usage_and_exit():
     exit(1)
 
 
-def process_import(filename: str, dry_run_mode: bool, debug_mode: bool, tag: str):
-    main(filename, dry_run_mode, debug_mode, tag)
+def process_import(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: bool, tag: str):
+    main(filename, dry_run_mode, debug_mode, csv_output_mode, tag)
     print()
 
 
@@ -532,11 +535,15 @@ if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == IMPORT_FLAG:
         dry_run = (len(sys.argv) >= 4 and sys.argv[3] == DRY_RUN_FLAG) or (
                     len(sys.argv) == 5 and sys.argv[4] == DRY_RUN_FLAG)
-        debug = (len(sys.argv) >= 4 and sys.argv[3] == DEBUG_FLAG) or (len(sys.argv) == 5 and sys.argv[4] == DEBUG_FLAG)
+        debug = (len(sys.argv) >= 4 and sys.argv[3] == DEBUG_FLAG) or (
+                  len(sys.argv) == 5 and sys.argv[4] == DEBUG_FLAG)
+        csv_output = (len(sys.argv) >= 4 and sys.argv[3] == CSV_OUTPUT_FLAG) or (
+                 len(sys.argv) == 5 and sys.argv[4] == CSV_OUTPUT_FLAG)
+
         try:
             config.read("conf/properties.ini")
         except Exception as e:
             print("Failed to load properties configuration file:", str(e))
-        process_import(sys.argv[2], dry_run, debug, config.get("Savings tags", "exclude"))
+        process_import(sys.argv[2], dry_run, debug, csv_output, config.get("Savings tags", "exclude"))
     else:
         print_usage_and_exit()
