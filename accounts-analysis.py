@@ -62,6 +62,12 @@ class AccountStatement:
                 max_date = operations_dates[0]
         return min_date, max_date
 
+    def operations_count(self, date):
+        if len(self.operations) > 0 and date in self.operations:
+            return len(self.operations[date])
+        else:
+            return 0
+
 
 def parse_double(ch):
     return float(ch.replace(',', '.').replace('\xa0', '')) if len(ch) > 0 else 0.0
@@ -253,7 +259,6 @@ def compute_balance_evolution(account_statement: AccountStatement, connection, d
 
     balance_debug(debug_mode, account_statement, balance_over_time)
     balance_health_check(account_statement, balance_over_time, connection)
-    balance_debug(debug_mode, account_statement, balance_over_time)
 
     return (balance_over_time,
             min_date, account_statement.last_date,
@@ -290,13 +295,21 @@ def compute_savings_derivative(balance_over_time):
     return savings_derivative
 
 
-def check_balance_in_checkpoints(date, balance, cur):
+def check_balance_in_checkpoints(date, expected_balance, expected_transaction_count, cur):
     cur.execute("SELECT * FROM CHECKPOINTS WHERE DATE_EPOCH = ?", (date.strftime('%s'),))
     row = cur.fetchone()
     if row is None:
         return True, None
     else:
-        return len(row) == 3 and abs(float(row[2]) - balance) <= 0.00001, float(row[2])
+        checked_balance = float(row[2])
+        checked_transaction_count = row[3]
+        eq_balance = abs(checked_balance - expected_balance) <= 0.00001
+        eq_transaction_count = (checked_transaction_count is not None and (int(checked_transaction_count) == expected_transaction_count)) or checked_transaction_count is None
+        lt_transaction_count =  checked_transaction_count is not None and (int(checked_transaction_count) < expected_transaction_count)
+        incoherent_due_to_new_transactions = (not eq_transaction_count or not eq_balance) and lt_transaction_count
+        if incoherent_due_to_new_transactions:
+            print('\033[94m' + "balance mismatch on " + str(date) + " due to newly added transactions" + '\033[0m')
+        return (eq_transaction_count and eq_balance) or lt_transaction_count, checked_balance
 
 
 def balance_health_check(acc_statement: AccountStatement, balance_over_time, connection):
@@ -304,7 +317,8 @@ def balance_health_check(acc_statement: AccountStatement, balance_over_time, con
           str(acc_statement.account_id) + " - " + get_account_name(acc_statement.account_id))
     cur = connection.cursor()
     for date in balance_over_time:
-        coherent_with_checkpoint, previous_balance = check_balance_in_checkpoints(date, balance_over_time[date], cur)
+        transaction_count = acc_statement.operations_count(date - datetime.timedelta(days=1))
+        coherent_with_checkpoint, previous_balance = check_balance_in_checkpoints(date, balance_over_time[date], transaction_count, cur)
         if not coherent_with_checkpoint:
             print('\033[93m' + date.strftime("%d/%m/%Y") + ": " + str(balance_over_time[date]) +
                   ": balance does not match previous checkpoint " + str(previous_balance) + '\033[0m')
@@ -339,9 +353,10 @@ def compute_balance_compared(balance, last_date):
 def write_operations_in_database(history, connection):
     for opDate in history.operations:
         for op in history.operations[opDate]:
-            request = "INSERT OR IGNORE INTO TRANSACTIONS (ID, DATE, DATE_EPOCH, LABEL, AMOUNT) \
+            request = "INSERT INTO TRANSACTIONS (ID, DATE, DATE_EPOCH, LABEL, AMOUNT) \
                 VALUES (" + str(op.id) + ", '" + op.date.strftime("%d/%m/%Y") + "', " + op.date.strftime(
-                '%s') + ", '" + op.label + "', " + str(op.value) + " )"
+                '%s') + ", '" + op.label + "', " + str(op.value) + " )" \
+             + " ON CONFLICT(ID) DO NOTHING"
             connection.execute(request)
     connection.commit()
 
@@ -424,7 +439,8 @@ def prepare_and_analyse_history(new_statements: AccountStatement, connection, dr
         update_statements_details(new_statements, whole_statements)
         try:
             analyse_operations(whole_statements, connection, debug_mode)
-            update_checkpoints(whole_statements, connection)
+            last_date_transactions_count = get_last_date_transactions_count(whole_statements, connection)
+            update_checkpoints(whole_statements, last_date_transactions_count, connection)
         except ValueError as e:
             print('\033[91m' + "Error in analyse operations for account " + str(new_statements.account_id) +
                   " - " + get_account_name(new_statements.account_id) + ": " + str(e) + '\033[0m')
@@ -434,12 +450,21 @@ def update_statements_details(new_history: AccountStatement, whole_history: Acco
     whole_history.last_date = new_history.last_date
     whole_history.last_balance = new_history.last_balance
 
+def get_last_date_transactions_count(acc_statement: AccountStatement, connection):
+    request = ("SELECT COUNT(ID) FROM TRANSACTIONS WHERE DATE_EPOCH= " + acc_statement.last_date.strftime('%s'))
+    cur = connection.cursor()
+    cur.execute(request)
+    row = cur.fetchone()
+    count = row[0] if row and row[0] else 0
+    return count
 
-def update_checkpoints(acc_statement: AccountStatement, connection):
+def update_checkpoints(acc_statement: AccountStatement, last_date_transactions_count: int, connection):
     last_balance = acc_statement.last_balance
     last_date = acc_statement.last_date
-    request = "INSERT OR IGNORE INTO CHECKPOINTS (DATE_EPOCH, DATE, BALANCE) VALUES \
-               (" + last_date.strftime('%s') + ", '" + last_date.strftime("%d/%m/%Y") + "', " + str(last_balance) + " )"
+    request = ("INSERT INTO CHECKPOINTS (DATE_EPOCH, DATE, BALANCE, TRANSACTIONS_COUNT) VALUES \
+               (" + last_date.strftime('%s') + ", '" + last_date.strftime("%d/%m/%Y") + "', "
+                + str(last_balance) + ", " + str(last_date_transactions_count) + " )" \
+                + " ON CONFLICT(DATE_EPOCH) DO NOTHING")
     connection.execute(request)
     connection.commit()
 
@@ -516,9 +541,10 @@ def create_transactions_table_if_not_exists(connection):
 
 def create_checkpoints_table_if_not_exists(connection):
     connection.execute('''CREATE TABLE IF NOT EXISTS CHECKPOINTS
-         (DATE_EPOCH     INTEGER  PRIMARY KEY NOT NULL,
-         DATE            TEXT     NOT NULL,
-         BALANCE         REAL);''')
+         (DATE_EPOCH        INTEGER  PRIMARY KEY NOT NULL,
+         DATE               TEXT     NOT NULL,
+         BALANCE            REAL,
+         TRANSACTIONS_COUNT INTEGER);''')
 
 
 def print_usage_and_exit():
