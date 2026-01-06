@@ -1,12 +1,11 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-import csv
 import datetime
-import re
 import sqlite3
 import sys
 import configparser
+import os
 
 import dateutil
 import dateutil.relativedelta
@@ -79,9 +78,22 @@ def get_account_name(account_id):
         account_name = config.get('Accounts', str(account_id))
     except Exception as ex:
         print("Failed to retrieve the name of account " + str(account_id), str(ex))
-    finally:
-        return account_name if account_name else ""
+    return account_name if account_name else ""
 
+def get_masked_account_id(account_id):
+    return 'X' * (len(account_id) - 3) + account_id[-3:]
+
+def get_output_directory():
+    output_dir = ""
+    try:
+        output_dir = config.get('Directories', 'output')
+    except Exception as ex:
+        print("Failed to retrieve the output directory", str(ex))
+    return output_dir if output_dir else ""
+
+def get_graph_filename(graph_type_name, account_id):
+    output_dir = os.path.expanduser(get_output_directory())
+    return os.path.join(output_dir, get_account_name(account_id) + ' - ' + graph_type_name + '.pdf')
 
 def is_savings_account(account_id):
     is_savings_account_param = False
@@ -89,8 +101,7 @@ def is_savings_account(account_id):
         is_savings_account_param = config.getboolean('Savings accounts', str(account_id))
     except Exception as ex:
         print("Failed to retrieve the name of account " + str(account_id), str(ex))
-    finally:
-        return is_savings_account_param if is_savings_account_param else False
+    return is_savings_account_param if is_savings_account_param else False
 
 
 def analyse_operations(statements: AccountStatement, connection, debug_mode: bool):
@@ -126,7 +137,7 @@ def draw_balance_evolution(account_id, balance, min_date, max_date,
     for label in axes.get_xticklabels(which='major'):
         label.set(rotation=30, horizontalalignment='right')
     axes.grid(True)
-    axes.set_title("Evolution du solde - " + get_account_name(account_id) + " (" + str(account_id) + ")")
+    axes.set_title("Evolution du solde - " + get_account_name(account_id) + " (" + get_masked_account_id(account_id) + ")")
     axes.set_ylabel(r'Solde')
     plt.hlines(y=0, xmin=min_date, xmax=max_date, colors='grey', linestyles='--')
     plt.plot(min_balance_date, min_balance, marker='x', color="blue")
@@ -138,7 +149,10 @@ def draw_balance_evolution(account_id, balance, min_date, max_date,
     plt.plot(max_date, last_balance, marker='x', color='black')
     plt.text(max_date, last_balance + offset, " " + format_amount(last_balance), color="black",
              verticalalignment='top')
+
+    plt.savefig(get_graph_filename('Evolution du solde', account_id))
     plt.show()
+    plt.close()
 
 
 def last_non_none(lst):
@@ -184,7 +198,7 @@ def draw_savings_derivative(account_id, savings_derivative):
     x, y = zip(*lists)
     savings_color = [{p<0: 'red', 0<=p<=2: 'orange', p>2: 'green'}[True] for p in y]
     axes.bar(x, y, width=8.0, color=savings_color)
-    axes.set_title("Epargne par mois - " + get_account_name(account_id) + " (" + str(account_id) + ")")
+    axes.set_title("Epargne par mois - " + get_account_name(account_id) + " (" + get_masked_account_id(account_id) + ")")
     axes.xaxis.set_major_locator(mdates.MonthLocator())
     axes.grid(True)
     axes.set_ylabel(r'Epargne')
@@ -194,7 +208,10 @@ def draw_savings_derivative(account_id, savings_derivative):
         color = "green" if savings_derivative[item] > 0 else "red" if savings_derivative[item] < 0 else "black"
         vertical_alignment = "bottom" if savings_derivative[item] >= 0 else "top"
         spot_value(item, savings_derivative[item], "", color, color, label, "center", plt, vertical_alignment)
+
+    plt.savefig(get_graph_filename('Epargne par mois', account_id))
     plt.show()
+    plt.close()
 
 
 def draw_balance_comparison(account_id, balance_compared):
@@ -206,16 +223,18 @@ def draw_balance_comparison(account_id, balance_compared):
     for month_age in reversed(range(0, len(balance_compared))):
         if month_age == 0:
             color = "red"
+            alpha = 1
         else:
             color_intensity = max_grey_intensity - month_age * a
+            alpha = 0.5
             color = (color_intensity, color_intensity, color_intensity)
         if month_age < len(balance_compared):
-            plt.plot(range(1, len(balance_compared[month_age])), balance_compared[month_age][1:], color=color)
+            plt.plot(range(1, len(balance_compared[month_age])), balance_compared[month_age][1:], color=color, alpha=alpha)
     plt.hlines(y=0, xmin=1, xmax=31, colors='grey', linestyles='--')
     axes.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=(0, 1, 2, 3, 4, 5, 6)))
     axes.xaxis.set_minor_locator(mdates.DayLocator())
     axes.grid(True)
-    axes.set_title("Comparaison du solde - " + get_account_name(account_id) + " (" + str(account_id) + ")")
+    axes.set_title("Comparaison du solde - " + get_account_name(account_id) + " (" + get_masked_account_id(account_id) + ")")
     axes.set_ylabel(r'Solde')
 
     last_month = 0 if count_non_none(balance_compared[0]) >= 1 else 1
@@ -229,7 +248,9 @@ def draw_balance_comparison(account_id, balance_compared):
     spot_value(last_day, max_value_same_day, "+", "grey", "darkgrey", "max: ", "right", plt, "bottom")
     spot_value(last_day, mean_value_same_day, "+", "grey", "darkgrey", "moy: ", "right", plt, "bottom")
 
+    plt.savefig(get_graph_filename('Comparaison du solde', account_id))
     plt.show()
+    plt.close()
 
 
 def compute_balance_evolution(account_statement: AccountStatement, connection, debug_mode: bool):
@@ -355,7 +376,7 @@ def write_operations_in_database(history, connection):
         for op in history.operations[opDate]:
             request = "INSERT INTO TRANSACTIONS (ID, DATE, DATE_EPOCH, LABEL, AMOUNT) \
                 VALUES (" + str(op.id) + ", '" + op.date.strftime("%d/%m/%Y") + "', " + op.date.strftime(
-                '%s') + ", '" + op.label + "', " + str(op.value) + " )" \
+                '%s') + ", '" + op.label.replace("'", " ") + "', " + str(op.value) + " )" \
              + " ON CONFLICT(ID) DO NOTHING"
             connection.execute(request)
     connection.commit()
@@ -391,8 +412,6 @@ def open_database_connection(account_id: int):
 def parse_file(filename: str, csv_output_mode: bool):
     if filename.endswith("ofx"):
         return parse_ofx(filename, csv_output_mode)
-    elif filename.endswith("csv"):
-        return parse_csv(filename)
     else:
         raise ValueError("Invalid file format")
 
@@ -481,7 +500,7 @@ def parse_ofx(filename: str, csv_output_mode: bool):
         for account in ofx.accounts:
             account_statement = AccountStatement(account.account_id)
             statement = account.statement
-            print("\n" + '\033[34m' + "Account " + account.account_id + " \"" + get_account_name(account.account_id) +
+            print("\n" + '\033[34m' + "Account " + account.account_id + " \"" + get_account_name(account.account_id) + " ->| " + str(statement.end_date) +
                   "\": " + '\033[0m')
             account_statement.last_date = statement.end_date.replace(hour=0, minute=0, second=0, microsecond=0)
             account_statement.last_balance = float(statement.balance)
@@ -502,32 +521,6 @@ def parse_ofx(filename: str, csv_output_mode: bool):
 
     print()
     return parsed_account_statements
-
-
-def parse_csv(filename: str):
-    parsed_account_statements = []
-    account_statement = AccountStatement(0)
-    with open(filename, 'r', encoding="ISO 8859-1") as csvFile:
-        account_reader = csv.reader(csvFile, delimiter=';', quotechar='"')
-        pattern_last_balance = re.compile(r'Solde au ([0-3][0-9]\/[0-1][0-9]\/[1-2][0-9]{3}) ([\d+\xa0]*\d+,\d\d) \x80')
-        pattern_operation = re.compile(r'[0-3][0-9]\/[0-1][0-9]\/[1-2][0-9]{3}')
-        for row in account_reader:
-            if len(row) == 1:
-                match_last_balance = pattern_last_balance.match(row[0])
-                if match_last_balance:
-                    account_statement.last_balance = float(match_last_balance.group(2).replace(',', '.').replace('\xa0', ''))
-                    account_statement.last_date = datetime.datetime.strptime(match_last_balance.group(1), '%d/%m/%Y').date()
-            if len(row) >= 4:
-                match_operation = pattern_operation.match(row[0])
-                if match_operation:
-                    transaction_date = datetime.datetime.strptime(row[0], '%d/%m/%Y').date()
-                    debit = parse_double(row[2])
-                    credit = parse_double(row[3])
-                    transaction_amount = -debit if debit > 0.0 else credit
-                    account_statement.add(Operation(None, transaction_date, row[1], transaction_amount))
-    parsed_account_statements.append(account_statement)
-    return parsed_account_statements
-
 
 def create_transactions_table_if_not_exists(connection):
     connection.execute('''CREATE TABLE IF NOT EXISTS TRANSACTIONS
