@@ -236,6 +236,7 @@ def draw_balance_comparison(account_id, balance_compared):
     axes.grid(True)
     axes.set_title("Comparaison du solde - " + get_account_name(account_id) + " (" + get_masked_account_id(account_id) + ")")
     axes.set_ylabel(r'Solde')
+    axes.set_ylim(0, 3000)
 
     last_month = 0 if count_non_none(balance_compared[0]) >= 1 else 1
     last_day, last_balance = last_non_none(balance_compared[last_month])
@@ -406,7 +407,8 @@ def read_transactions_from_database(account_id, connection):
 
 
 def open_database_connection(account_id: int):
-    return sqlite3.connect('db/account_' + str(account_id) + '.db')
+    database_dir = os.path.expanduser(config.get('Directories', 'database'))
+    return sqlite3.connect(os.path.join(database_dir, 'account_' + str(account_id) + '.db'))
 
 
 def parse_file(filename: str, csv_output_mode: bool):
