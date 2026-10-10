@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import configparser
 import os
+import re
 
 import dateutil
 import dateutil.relativedelta
@@ -72,10 +73,23 @@ def parse_double(ch):
     return float(ch.replace(',', '.').replace('\xa0', '')) if len(ch) > 0 else 0.0
 
 
+def get_account_config_key(section, account_id):
+    matches = []
+    for key in config.options(section):
+        pattern = ''.join('[0-9]' if char in 'Xx' else re.escape(char) for char in key)
+        if re.fullmatch(pattern, str(account_id)):
+            matches.append(key)
+    if not matches:
+        raise configparser.NoOptionError('matching account', section)
+    if len(matches) > 1:
+        raise ValueError("Multiple account keys match in section " + section)
+    return matches[0]
+
+
 def get_account_name(account_id):
     account_name = ""
     try:
-        account_name = config.get('Accounts', str(account_id))
+        account_name = config.get('Accounts', get_account_config_key('Accounts', account_id))
     except Exception as ex:
         print("Failed to retrieve the name of account " + str(account_id), str(ex))
     return account_name if account_name else ""
@@ -98,7 +112,8 @@ def get_graph_filename(graph_type_name, account_id):
 def is_savings_account(account_id):
     is_savings_account_param = False
     try:
-        is_savings_account_param = config.getboolean('Savings accounts', str(account_id))
+        is_savings_account_param = config.getboolean(
+            'Savings accounts', get_account_config_key('Savings accounts', account_id))
     except Exception as ex:
         print("Failed to retrieve the name of account " + str(account_id), str(ex))
     return is_savings_account_param if is_savings_account_param else False
@@ -408,7 +423,8 @@ def read_transactions_from_database(account_id, connection):
 
 def open_database_connection(account_id: int):
     database_dir = os.path.expanduser(config.get('Directories', 'database'))
-    return sqlite3.connect(os.path.join(database_dir, 'account_' + str(account_id) + '.db'))
+    db_path = os.path.join(database_dir, 'account_' + str(account_id) + '.db')
+    return sqlite3.connect(db_path)
 
 
 def parse_file(filename: str, csv_output_mode: bool):
