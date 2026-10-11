@@ -15,6 +15,7 @@ import calendar
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from ofxparse import OfxParser
+from balance_checks import cents, latest_observation, reconcile_import
 
 MONTHS_IN_YEAR = 12
 DAYS_IN_MONTH = 31
@@ -30,7 +31,8 @@ config = configparser.RawConfigParser()
 
 class Operation:
     def __init__(self, operation_id, date, label, amount):
-        self.id = operation_id
+        self.id = str(operation_id)
+        self.posted_at = date
         self.date = date.replace(hour=0, minute=0, second=0, microsecond=0)
         self.label = label
         self.value = amount
@@ -46,6 +48,7 @@ class AccountStatement:
         self.operations = {}
         self.last_date = None
         self.last_balance = None
+        self.balance_date = None
 
     def add(self, operation):
         if operation.date not in self.operations:
@@ -58,8 +61,8 @@ class AccountStatement:
         if len(self.operations) > 0:
             operations_dates = list(self.operations.keys())
             if len(operations_dates) > 0:
-                min_date = operations_dates[len(operations_dates) - 1]
-                max_date = operations_dates[0]
+                min_date = min(operations_dates)
+                max_date = max(operations_dates)
         return min_date, max_date
 
     def operations_count(self, date):
@@ -232,7 +235,7 @@ def draw_savings_derivative(account_id, savings_derivative):
 def draw_balance_comparison(account_id, balance_compared):
     min_grey_intensity = 0.85
     max_grey_intensity = 0.35
-    a = (max_grey_intensity - min_grey_intensity) / (len(balance_compared) - 1)
+    a = (max_grey_intensity - min_grey_intensity) / max(1, len(balance_compared) - 1)
     fig, axes = plt.subplots()
     fig.set_figwidth(20)
     for month_age in reversed(range(0, len(balance_compared))):
@@ -251,7 +254,7 @@ def draw_balance_comparison(account_id, balance_compared):
     axes.grid(True)
     axes.set_title("Comparaison du solde - " + get_account_name(account_id) + " (" + get_masked_account_id(account_id) + ")")
     axes.set_ylabel(r'Solde')
-    axes.set_ylim(0, 3000)
+    axes.set_ylim(0, 3500)
 
     last_month = 0 if count_non_none(balance_compared[0]) >= 1 else 1
     last_day, last_balance = last_non_none(balance_compared[last_month])
@@ -273,29 +276,27 @@ def compute_balance_evolution(account_statement: AccountStatement, connection, d
     min_date, max_date = account_statement.get_date_boundaries()
     balance_over_time = {}
     current_date = account_statement.last_date
-    current_balance = account_statement.last_balance
+    current_balance = cents(account_statement.last_balance)
     min_balance = account_statement.last_balance
     min_balance_date = account_statement.last_date
     max_balance = account_statement.last_balance
     max_balance_date = account_statement.last_date
 
     while current_date >= min_date:
-        if current_date in account_statement.operations:
-            for operation in account_statement.operations[current_date]:
-                current_balance = current_balance - operation.value
-        balance_over_time[current_date] = current_balance
+        balance_over_time[current_date] = current_balance / 100
 
-        if current_balance < min_balance:
-            min_balance = current_balance
+        if current_balance / 100 < min_balance:
+            min_balance = current_balance / 100
             min_balance_date = current_date
-        if current_balance > max_balance:
-            max_balance = current_balance
+        if current_balance / 100 > max_balance:
+            max_balance = current_balance / 100
             max_balance_date = current_date
 
+        for operation in account_statement.operations.get(current_date, []):
+            current_balance -= cents(operation.value)
         current_date = current_date - datetime.timedelta(days=1)
 
     balance_debug(debug_mode, account_statement, balance_over_time)
-    balance_health_check(account_statement, balance_over_time, connection)
 
     return (balance_over_time,
             min_date, account_statement.last_date,
@@ -332,37 +333,6 @@ def compute_savings_derivative(balance_over_time):
     return savings_derivative
 
 
-def check_balance_in_checkpoints(date, expected_balance, expected_transaction_count, cur):
-    cur.execute("SELECT * FROM CHECKPOINTS WHERE DATE_EPOCH = ?", (date.strftime('%s'),))
-    row = cur.fetchone()
-    if row is None:
-        return True, None
-    else:
-        checked_balance = float(row[2])
-        checked_transaction_count = row[3]
-        eq_balance = abs(checked_balance - expected_balance) <= 0.00001
-        eq_transaction_count = (checked_transaction_count is not None and (int(checked_transaction_count) == expected_transaction_count)) or checked_transaction_count is None
-        lt_transaction_count =  checked_transaction_count is not None and (int(checked_transaction_count) < expected_transaction_count)
-        incoherent_due_to_new_transactions = (not eq_transaction_count or not eq_balance) and lt_transaction_count
-        if incoherent_due_to_new_transactions:
-            print('\033[94m' + "balance mismatch on " + str(date) + " due to newly added transactions" + '\033[0m')
-        return (eq_transaction_count and eq_balance) or lt_transaction_count, checked_balance
-
-
-def balance_health_check(acc_statement: AccountStatement, balance_over_time, connection):
-    print("Healthcheck for balance evolution of account " +
-          str(acc_statement.account_id) + " - " + get_account_name(acc_statement.account_id))
-    cur = connection.cursor()
-    for date in balance_over_time:
-        transaction_count = acc_statement.operations_count(date - datetime.timedelta(days=1))
-        coherent_with_checkpoint, previous_balance = check_balance_in_checkpoints(date, balance_over_time[date], transaction_count, cur)
-        if not coherent_with_checkpoint:
-            print('\033[93m' + date.strftime("%d/%m/%Y") + ": " + str(balance_over_time[date]) +
-                  ": balance does not match previous checkpoint " + str(previous_balance) + '\033[0m')
-            raise ValueError("Invalid balance in checkpoints")
-    print('\033[92m' + "OK" + '\033[0m')
-
-
 def balance_debug(debug_mode: bool, acc_statement: AccountStatement, balance_over_time):
     if debug_mode:
         print("Balance for account " + str(acc_statement.account_id) + " - " + get_account_name(
@@ -387,37 +357,15 @@ def compute_balance_compared(balance, last_date):
     return balance_compared
 
 
-def write_operations_in_database(history, connection):
-    for opDate in history.operations:
-        for op in history.operations[opDate]:
-            request = "INSERT INTO TRANSACTIONS (ID, DATE, DATE_EPOCH, LABEL, AMOUNT) \
-                VALUES (" + str(op.id) + ", '" + op.date.strftime("%d/%m/%Y") + "', " + op.date.strftime(
-                '%s') + ", '" + op.label.replace("'", " ") + "', " + str(op.value) + " )" \
-             + " ON CONFLICT(ID) DO NOTHING"
-            connection.execute(request)
-    connection.commit()
-
-
-def search_operations_in_database(history, connection):
-    print("Searching operations in database for account " + str(history.account_id) + " (" + get_account_name(
-        history.account_id) + ")")
-    cur = connection.cursor()
-    for opDate in history.operations:
-        for op in history.operations[opDate]:
-            request = "SELECT * FROM TRANSACTIONS WHERE ID =" + str(op.id)
-            cur.execute(request)
-            row = cur.fetchone()
-            if row is None:
-                print("Operation " + str(op.id) + " is new: " + op.debug())
-    print()
-
-
-def read_transactions_from_database(account_id, connection):
+def read_transactions_from_database(account_id, connection, as_of):
     account_statement = AccountStatement(account_id)
-    cursor = connection.execute("SELECT ID, DATE, DATE_EPOCH, LABEL, AMOUNT FROM TRANSACTIONS ORDER BY DATE_EPOCH DESC")
-    for row in cursor:
-        op = Operation(row[0], datetime.datetime.utcfromtimestamp(int(row[2])), row[3], float(row[4]))
-        account_statement.add(op)
+    cursor = connection.execute(
+        "SELECT ID, DATE, POSTED_AT, LABEL, AMOUNT_CENTS FROM TRANSACTIONS")
+    for identifier, date, posted_at, label, amount in cursor:
+        posted = (datetime.datetime.fromisoformat(posted_at) if posted_at else
+                  datetime.datetime.strptime(date, '%d/%m/%Y'))
+        if posted <= as_of:
+            account_statement.add(Operation(identifier, posted, label, amount / 100))
     return account_statement
 
 
@@ -437,12 +385,11 @@ def parse_file(filename: str, csv_output_mode: bool):
 def extract_savings(account_id: int, connection, tag: str):
     savings = 0
     if is_savings_account(account_id):
-        request = ("select (select BALANCE from main.CHECKPOINTS order by DATE_EPOCH DESC LIMIT 1) - "
-                   "(select sum(amount) from main.TRANSACTIONS where TAG = '") + tag + "') AS AVAILABLE"
-        cur = connection.cursor()
-        cur.execute(request)
-        row = cur.fetchone()
-        savings = row[0] if row and row[0] else 0
+        latest = latest_observation(connection)
+        if latest:
+            tagged = sum(row[0] for row in connection.execute(
+                'SELECT AMOUNT_CENTS FROM TRANSACTIONS WHERE TAG = ?', (tag,)))
+            savings = (latest[1] - tagged) / 100
     return savings
 
 
@@ -451,9 +398,10 @@ def process_statements(new_account_statements: [AccountStatement], dry_run_mode:
     for new_account_statement in new_account_statements:
         with open_database_connection(new_account_statement.account_id) as connection:
             prepare_and_analyse_history(new_account_statement, connection, dry_run_mode, debug_mode)
-            if is_savings_account(new_account_statement.account_id):
+            if not dry_run_mode and is_savings_account(new_account_statement.account_id):
                 savings[new_account_statement.account_id] = extract_savings(new_account_statement.account_id, connection, tag)
-    report_savings(savings)
+    if not dry_run_mode:
+        report_savings(savings)
 
 
 def report_savings(savings):
@@ -466,44 +414,24 @@ def report_savings(savings):
 
 
 def prepare_and_analyse_history(new_statements: AccountStatement, connection, dry_run_mode: bool, debug_mode: bool):
-    create_transactions_table_if_not_exists(connection)
-    create_checkpoints_table_if_not_exists(connection)
+    status = reconcile_import(new_statements, connection, dry_run=dry_run_mode)
+    messages = {
+        'baseline-unverified': 'Initial bank balance recorded; no reliable previous reference to verify it.',
+        'reconciled': 'Balance reconciled exactly.',
+        'reconciled-late': 'Balance reconciled including newly discovered backdated transactions.',
+        'reconciled-backfill': 'Balance reconciled assuming older transactions were already included in the previous bank balance.',
+        'historical-reconciled': 'Older statement reconciled with the latest bank balance.',
+    }
+    print(('Dry run: ' if dry_run_mode else '') + messages[status])
     if dry_run_mode:
-        search_operations_in_database(new_statements, connection)
-    else:
-        write_operations_in_database(new_statements, connection)
-        whole_statements = read_transactions_from_database(new_statements.account_id, connection)
-        update_statements_details(new_statements, whole_statements)
-        try:
-            analyse_operations(whole_statements, connection, debug_mode)
-            last_date_transactions_count = get_last_date_transactions_count(whole_statements, connection)
-            update_checkpoints(whole_statements, last_date_transactions_count, connection)
-        except ValueError as e:
-            print('\033[91m' + "Error in analyse operations for account " + str(new_statements.account_id) +
-                  " - " + get_account_name(new_statements.account_id) + ": " + str(e) + '\033[0m')
-
-
-def update_statements_details(new_history: AccountStatement, whole_history: AccountStatement):
-    whole_history.last_date = new_history.last_date
-    whole_history.last_balance = new_history.last_balance
-
-def get_last_date_transactions_count(acc_statement: AccountStatement, connection):
-    request = ("SELECT COUNT(ID) FROM TRANSACTIONS WHERE DATE_EPOCH= " + acc_statement.last_date.strftime('%s'))
-    cur = connection.cursor()
-    cur.execute(request)
-    row = cur.fetchone()
-    count = row[0] if row and row[0] else 0
-    return count
-
-def update_checkpoints(acc_statement: AccountStatement, last_date_transactions_count: int, connection):
-    last_balance = acc_statement.last_balance
-    last_date = acc_statement.last_date
-    request = ("INSERT INTO CHECKPOINTS (DATE_EPOCH, DATE, BALANCE, TRANSACTIONS_COUNT) VALUES \
-               (" + last_date.strftime('%s') + ", '" + last_date.strftime("%d/%m/%Y") + "', "
-                + str(last_balance) + ", " + str(last_date_transactions_count) + " )" \
-                + " ON CONFLICT(DATE_EPOCH) DO NOTHING")
-    connection.execute(request)
-    connection.commit()
+        return
+    latest = latest_observation(connection)
+    as_of = datetime.datetime.fromisoformat(latest[0])
+    whole_statements = read_transactions_from_database(new_statements.account_id, connection, as_of)
+    whole_statements.balance_date = as_of
+    whole_statements.last_date = as_of.replace(hour=0, minute=0, second=0, microsecond=0)
+    whole_statements.last_balance = latest[1] / 100
+    analyse_operations(whole_statements, connection, debug_mode)
 
 
 def main(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: bool, tag: str):
@@ -520,8 +448,14 @@ def parse_ofx(filename: str, csv_output_mode: bool):
             statement = account.statement
             print("\n" + '\033[34m' + "Account " + account.account_id + " \"" + get_account_name(account.account_id) + " ->| " + str(statement.end_date) +
                   "\": " + '\033[0m')
-            account_statement.last_date = statement.end_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            account_statement.last_balance = float(statement.balance)
+            if getattr(statement, 'discarded_entries', []):
+                raise ValueError("OFX contains discarded transactions; import cancelled")
+            account_statement.balance_date = getattr(statement, 'balance_date', None)
+            if account_statement.balance_date is None:
+                raise ValueError("OFX is missing the ledger balance date (LEDGERBAL/DTASOF)")
+            account_statement.last_date = account_statement.balance_date.replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            account_statement.last_balance = statement.balance
             print('\033[94m' + "Balance on " + account_statement.last_date.strftime("%d/%m/%Y") + ": "
                   + str(account_statement.last_balance) + " " + CURRENCY + '\033[0m')
             if len(statement.transactions) == 0:
@@ -539,24 +473,6 @@ def parse_ofx(filename: str, csv_output_mode: bool):
 
     print()
     return parsed_account_statements
-
-def create_transactions_table_if_not_exists(connection):
-    connection.execute('''CREATE TABLE IF NOT EXISTS TRANSACTIONS
-         (ID            INTEGER  PRIMARY KEY NOT NULL,
-         DATE           TEXT     NOT NULL,
-         DATE_EPOCH     INTEGER  NOT NULL,
-         LABEL          TEXT,
-         AMOUNT         REAL,
-         TAG            TEXT);''')
-
-
-def create_checkpoints_table_if_not_exists(connection):
-    connection.execute('''CREATE TABLE IF NOT EXISTS CHECKPOINTS
-         (DATE_EPOCH        INTEGER  PRIMARY KEY NOT NULL,
-         DATE               TEXT     NOT NULL,
-         BALANCE            REAL,
-         TRANSACTIONS_COUNT INTEGER);''')
-
 
 def print_usage_and_exit():
     print("usage: python3 accounts-analysis.py {} export_from_bank.ofx".format(IMPORT_FLAG))
