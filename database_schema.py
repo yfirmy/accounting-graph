@@ -25,8 +25,10 @@ def backup_before_upgrade(connection, dry_run=False):
         return None
     observations = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'BALANCE_OBSERVATIONS'").fetchone()
+    alerts = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'TRANSACTION_ALERTS'").fetchone()
     if (columns.get('ID', '').upper() != 'INTEGER'
-            and {'POSTED_AT', 'AMOUNT_CENTS'} <= columns.keys() and observations):
+            and {'POSTED_AT', 'AMOUNT_CENTS', 'MATCHED_RULES'} <= columns.keys() and observations and alerts):
         return None
     filename = next(row[2] for row in connection.execute('PRAGMA database_list') if row[1] == 'main')
     if not filename:
@@ -89,13 +91,15 @@ def _prepare_schema(connection):
     connection.execute('''CREATE TABLE IF NOT EXISTS TRANSACTIONS (
         ID TEXT PRIMARY KEY NOT NULL, DATE TEXT NOT NULL,
         DATE_EPOCH INTEGER NOT NULL, LABEL TEXT, AMOUNT REAL, TAG TEXT,
-        POSTED_AT TEXT, AMOUNT_CENTS INTEGER)''')
+        POSTED_AT TEXT, AMOUNT_CENTS INTEGER,
+        MATCHED_RULES TEXT NOT NULL DEFAULT '[]')''')
     columns = _columns(connection)
     objects = []
     if columns['ID'].upper() == 'INTEGER':
         objects = _upgrade_transaction_ids(connection, columns)
         columns = _columns(connection)
-    for name, kind in [('POSTED_AT', 'TEXT'), ('AMOUNT_CENTS', 'INTEGER')]:
+    for name, kind in [('POSTED_AT', 'TEXT'), ('AMOUNT_CENTS', 'INTEGER'),
+                       ('MATCHED_RULES', "TEXT NOT NULL DEFAULT '[]'")]:
         if name not in columns:
             connection.execute('ALTER TABLE TRANSACTIONS ADD COLUMN ' + name + ' ' + kind)
     for identifier, amount in connection.execute(
@@ -106,6 +110,12 @@ def _prepare_schema(connection):
         ID INTEGER PRIMARY KEY, AS_OF TEXT NOT NULL,
         BALANCE_CENTS INTEGER NOT NULL, KNOWN_TOTAL_CENTS INTEGER NOT NULL,
         STATUS TEXT NOT NULL, IMPORTED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
+    connection.execute('''CREATE TABLE IF NOT EXISTS TRANSACTION_ALERTS (
+        TRANSACTION_ID TEXT NOT NULL, RULE_ID TEXT NOT NULL,
+        TRANSACTION_DATE TEXT NOT NULL, LABEL TEXT NOT NULL,
+        AMOUNT_CENTS INTEGER NOT NULL, REASONS TEXT NOT NULL,
+        CHECKED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (TRANSACTION_ID, RULE_ID))''')
     # Restore triggers only after backfilling the new columns, so migration
     # does not fire application-specific update triggers on historical rows.
     for (sql,) in objects:

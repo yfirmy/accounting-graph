@@ -16,6 +16,7 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from ofxparse import OfxParser
 from balance_checks import cents, latest_observation, reconcile_import
+from legitimacy_checks import load_rules, refresh_alerts, export_alerts
 
 MONTHS_IN_YEAR = 12
 DAYS_IN_MONTH = 31
@@ -394,13 +395,25 @@ def extract_savings(account_id: int, connection, tag: str):
 
 
 def process_statements(new_account_statements: [AccountStatement], dry_run_mode: bool, debug_mode: bool, tag: str):
+    rules = load_rules(config.get('Files', 'legitimacy_rules', fallback='legitimacy_rules.ini'))
+    output_directory = config.get('Directories', 'output') if not dry_run_mode else None
+    if not dry_run_mode and not output_directory.strip():
+        raise ValueError('Missing output directory for transaction alerts')
     savings = {}
+    reporting_by_account = {}
     for new_account_statement in new_account_statements:
         with open_database_connection(new_account_statement.account_id) as connection:
-            prepare_and_analyse_history(new_account_statement, connection, dry_run_mode, debug_mode)
+            alerts = prepare_and_analyse_history(
+                new_account_statement, connection, dry_run_mode, debug_mode, rules=rules)
+            account_label = '{} ({})'.format(get_account_name(new_account_statement.account_id),
+                                            get_masked_account_id(new_account_statement.account_id))
+            reporting_by_account[new_account_statement.account_id] = [(account_label,) + row for row in alerts]
             if not dry_run_mode and is_savings_account(new_account_statement.account_id):
                 savings[new_account_statement.account_id] = extract_savings(new_account_statement.account_id, connection, tag)
     if not dry_run_mode:
+        reporting = [row for rows in reporting_by_account.values() for row in rows]
+        report_path = export_alerts(reporting, output_directory)
+        print('Transaction alerts: {} — {}'.format(len(reporting), report_path))
         report_savings(savings)
 
 
@@ -413,8 +426,25 @@ def report_savings(savings):
     print('\n' + '\033[33m' + "Total savings: " + format_amount(total_savings) + '\033[0m')
 
 
-def prepare_and_analyse_history(new_statements: AccountStatement, connection, dry_run_mode: bool, debug_mode: bool):
-    status = reconcile_import(new_statements, connection, dry_run=dry_run_mode)
+def print_transaction_alerts(account_id, alerts):
+    summary = 'Transactions à examiner pour le compte {} "{}" : {}'.format(
+        str(account_id), get_account_name(account_id), len(alerts))
+    print("\n" + '\033[34m' + summary + '\033[0m' + "\n")
+    for identifier, rule, date, label, amount, reasons in alerts:
+        print('\033[91m' + '  {} | {} | Transaction {} | Règle {}'.format(
+            datetime.datetime.fromisoformat(date).strftime('%d/%m/%Y %H:%M:%S'),
+            format_amount(amount / 100), identifier, '\033[0m' + '"' + rule.replace("_", " ") + '"' ))
+        print('\033[33m' + '    {}'.format(label) + '\033[0m')
+        print('\033[91m' + '    Motifs : {}'.format(reasons) + '\033[0m')
+        print("\n")
+
+
+def prepare_and_analyse_history(new_statements: AccountStatement, connection, dry_run_mode: bool, debug_mode: bool, rules=None):
+    alerts = []
+    def check_legitimacy(database):
+        alerts.extend(refresh_alerts(database, new_statements.account_id, rules))
+    status = reconcile_import(new_statements, connection, dry_run=dry_run_mode,
+                              after_reconcile=check_legitimacy if rules is not None else None)
     messages = {
         'baseline-unverified': 'Initial bank balance recorded; no reliable previous reference to verify it.',
         'reconciled': 'Balance reconciled exactly.',
@@ -423,8 +453,10 @@ def prepare_and_analyse_history(new_statements: AccountStatement, connection, dr
         'historical-reconciled': 'Older statement reconciled with the latest bank balance.',
     }
     print(('Dry run: ' if dry_run_mode else '') + messages[status])
+    if rules is not None:
+        print_transaction_alerts(new_statements.account_id, alerts)
     if dry_run_mode:
-        return
+        return alerts
     latest = latest_observation(connection)
     as_of = datetime.datetime.fromisoformat(latest[0])
     whole_statements = read_transactions_from_database(new_statements.account_id, connection, as_of)
@@ -432,6 +464,7 @@ def prepare_and_analyse_history(new_statements: AccountStatement, connection, dr
     whole_statements.last_date = as_of.replace(hour=0, minute=0, second=0, microsecond=0)
     whole_statements.last_balance = latest[1] / 100
     analyse_operations(whole_statements, connection, debug_mode)
+    return alerts
 
 
 def main(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: bool, tag: str):

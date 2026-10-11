@@ -129,6 +129,51 @@ class SchemaMigrationTests(unittest.TestCase):
         self.assertEqual(list(self.connection.iterdump()), before)
         self.assertEqual(len(list(self.path.parent.glob('backups/*.db'))), 1)
 
+    def test_classification_upgrade_adds_column_without_changing_history(self):
+        # Simulate the immediately preceding schema, including reconciliation
+        # and report tables, but without the new classification column.
+        self.connection.executescript('''
+            CREATE TABLE PREVIOUS_TRANSACTIONS (ID TEXT PRIMARY KEY NOT NULL,
+                DATE TEXT NOT NULL, DATE_EPOCH INTEGER NOT NULL, LABEL TEXT,
+                AMOUNT REAL, TAG TEXT, POSTED_AT TEXT, AMOUNT_CENTS INTEGER);
+            INSERT INTO PREVIOUS_TRANSACTIONS
+                SELECT CAST(ID AS TEXT), DATE, DATE_EPOCH, LABEL, AMOUNT, TAG,
+                       NULL, CAST(ROUND(AMOUNT * 100) AS INTEGER) FROM TRANSACTIONS;
+            DROP TABLE TRANSACTIONS;
+            ALTER TABLE PREVIOUS_TRANSACTIONS RENAME TO TRANSACTIONS;
+            CREATE TABLE BALANCE_OBSERVATIONS (ID INTEGER PRIMARY KEY, AS_OF TEXT NOT NULL,
+                BALANCE_CENTS INTEGER NOT NULL, KNOWN_TOTAL_CENTS INTEGER NOT NULL,
+                STATUS TEXT NOT NULL, IMPORTED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE TRANSACTION_ALERTS (TRANSACTION_ID TEXT NOT NULL, RULE_ID TEXT NOT NULL,
+                TRANSACTION_DATE TEXT NOT NULL, LABEL TEXT NOT NULL, AMOUNT_CENTS INTEGER NOT NULL,
+                REASONS TEXT NOT NULL, CHECKED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (TRANSACTION_ID, RULE_ID));
+        ''')
+        before = list(self.connection.iterdump())
+        self.migrate()
+        backup = sqlite3.connect(str(next(self.path.parent.glob('backups/*.db'))))
+        self.addCleanup(backup.close)
+        self.assertEqual(list(backup.iterdump()), before)
+        self.assertEqual(self.connection.execute('''SELECT CAST(ID AS INTEGER), DATE, DATE_EPOCH,
+            LABEL, AMOUNT, TAG FROM TRANSACTIONS ORDER BY CAST(ID AS INTEGER)''').fetchall(), self.rows)
+        self.assertEqual(self.connection.execute(
+            "SELECT COUNT(*) FROM TRANSACTIONS WHERE MATCHED_RULES = '[]'").fetchone()[0], 1461)
+        self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM CHECKPOINTS').fetchone()[0], 1)
+
+    def test_adding_alert_table_backs_up_already_upgraded_history(self):
+        self.migrate()
+        self.connection.execute('DROP TABLE TRANSACTION_ALERTS')
+        self.connection.commit()
+        before = list(self.connection.iterdump())
+        existing_backups = set(self.path.parent.glob('backups/*.db'))
+        self.migrate()
+        new_backups = set(self.path.parent.glob('backups/*.db')) - existing_backups
+        self.assertEqual(len(new_backups), 1)
+        backup = sqlite3.connect(str(new_backups.pop()))
+        self.addCleanup(backup.close)
+        self.assertEqual(list(backup.iterdump()), before)
+        self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM TRANSACTIONS').fetchone()[0], 1461)
+
 
 if __name__ == '__main__':
     unittest.main()

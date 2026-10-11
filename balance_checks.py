@@ -66,7 +66,7 @@ def observe(connection, as_of, balance, total, status):
         (as_of, balance, total, status))
 
 
-def reconcile_import(history, connection, dry_run=False):
+def reconcile_import(history, connection, dry_run=False, after_reconcile=None):
     """Validate and persist one account, or roll back the entire attempted import.
 
     Total snapshots measure newly known amounts, including late postings. An
@@ -109,4 +109,6 @@ def reconcile_import(history, connection, dry_run=False):
         observe(connection, as_of, balance, total, status)
         if previous is not None and as_of < previous[0]:
             observe(connection, previous[0], previous[1], latest_total, 'history-extended')
+        if after_reconcile is not None:
+            after_reconcile(connection)
         return status
