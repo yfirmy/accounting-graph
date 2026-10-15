@@ -250,15 +250,6 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(reconcile_import(statement('2026-10-12T18:00:00', '1000'),
                                          self.connection), 'reconciled')
 
-    def test_savings_reads_new_balance_and_preserves_tag_sum(self):
-        self.baseline()
-        reconcile_import(statement('2026-10-12T18:00:00', '1100',
-            operation('tagged', '2026-10-12T10:00:00', '100')), self.connection)
-        self.connection.execute("UPDATE TRANSACTIONS SET TAG = 'HERITAGE'")
-        with patch.object(app, 'is_savings_account', return_value=True):
-            self.assertEqual(app.extract_savings('123456', self.connection, 'HERITAGE'), 1000)
-            self.assertEqual(app.extract_savings('123456', self.connection, 'none'), 1100)
-
     def test_verified_import_generates_graphs(self):
         with tempfile.TemporaryDirectory() as directory:
             history = statement('2026-10-12T18:00:00', '1000',

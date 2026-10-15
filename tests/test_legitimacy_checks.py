@@ -341,8 +341,8 @@ class LegitimacyTests(unittest.TestCase):
         with patch.object(app, 'config', config), patch.object(app, 'analyse_operations'), \
                 patch.object(app, 'open_database_connection', return_value=self.connection), \
                 contextlib.redirect_stdout(io.StringIO()):
-            app.process_statements([history], False, False, 'HERITAGE')
-            app.process_statements([history], False, False, 'HERITAGE')
+            app.process_statements([history], False, False)
+            app.process_statements([history], False, False)
         self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM TRANSACTION_ALERTS').fetchone()[0], 1)
         csv_text = (self.path / 'transaction_alerts.csv').read_text(encoding='utf-8-sig')
         self.assertIn('Merchant', csv_text)
@@ -371,7 +371,7 @@ class LegitimacyTests(unittest.TestCase):
                 patch.object(app, 'is_savings_account', return_value=False), \
                 patch.object(app, 'get_account_name', side_effect=lambda account: account[-4:]), \
                 contextlib.redirect_stdout(io.StringIO()):
-            app.process_statements(histories + [histories[0]], False, False, 'HERITAGE')
+            app.process_statements(histories + [histories[0]], False, False)
         with (self.path / 'transaction_alerts.csv').open(encoding='utf-8-sig', newline='') as stream:
             rows = list(csv.reader(stream, delimiter=';'))
         self.assertEqual(len(rows), 3)
@@ -384,7 +384,7 @@ class LegitimacyTests(unittest.TestCase):
         config.read_dict({'Files': {'legitimacy_rules': str(self.path / 'rules.ini')}})
         with patch.object(app, 'config', config), patch.object(app, 'open_database_connection') as open_db:
             with self.assertRaises(ValueError):
-                app.process_statements([], False, False, 'HERITAGE')
+                app.process_statements([], False, False)
             open_db.assert_not_called()
 
     def test_failed_csv_replace_preserves_previous_report(self):

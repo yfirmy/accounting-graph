@@ -383,23 +383,11 @@ def parse_file(filename: str, csv_output_mode: bool):
         raise ValueError("Invalid file format")
 
 
-def extract_savings(account_id: int, connection, tag: str):
-    savings = 0
-    if is_savings_account(account_id):
-        latest = latest_observation(connection)
-        if latest:
-            tagged = sum(row[0] for row in connection.execute(
-                'SELECT AMOUNT_CENTS FROM TRANSACTIONS WHERE TAG = ?', (tag,)))
-            savings = (latest[1] - tagged) / 100
-    return savings
-
-
-def process_statements(new_account_statements: [AccountStatement], dry_run_mode: bool, debug_mode: bool, tag: str):
+def process_statements(new_account_statements: [AccountStatement], dry_run_mode: bool, debug_mode: bool):
     rules = load_rules(config.get('Files', 'legitimacy_rules', fallback='legitimacy_rules.ini'))
     output_directory = config.get('Directories', 'output') if not dry_run_mode else None
     if not dry_run_mode and not output_directory.strip():
         raise ValueError('Missing output directory for transaction alerts')
-    savings = {}
     reporting_by_account = {}
     for new_account_statement in new_account_statements:
         with open_database_connection(new_account_statement.account_id) as connection:
@@ -408,22 +396,10 @@ def process_statements(new_account_statements: [AccountStatement], dry_run_mode:
             account_label = '{} ({})'.format(get_account_name(new_account_statement.account_id),
                                             get_masked_account_id(new_account_statement.account_id))
             reporting_by_account[new_account_statement.account_id] = [(account_label,) + row for row in alerts]
-            if not dry_run_mode and is_savings_account(new_account_statement.account_id):
-                savings[new_account_statement.account_id] = extract_savings(new_account_statement.account_id, connection, tag)
     if not dry_run_mode:
         reporting = [row for rows in reporting_by_account.values() for row in rows]
         report_path = export_alerts(reporting, output_directory)
         print('Transaction alerts: {} — {}'.format(len(reporting), report_path))
-        report_savings(savings)
-
-
-def report_savings(savings):
-    print('\n' + '\033[33m' + "Savings summary:" + '\033[0m')
-    total_savings = 0
-    for savings_account in savings:
-        total_savings += savings[savings_account] #if not None else 0)
-        print("  Savings for account " + str(savings_account) + ": " + format_amount(savings[savings_account]))
-    print('\n' + '\033[33m' + "Total savings: " + format_amount(total_savings) + '\033[0m')
 
 
 def print_transaction_alerts(account_id, alerts):
@@ -467,9 +443,9 @@ def prepare_and_analyse_history(new_statements: AccountStatement, connection, dr
     return alerts
 
 
-def main(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: bool, tag: str):
+def main(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: bool):
     new_account_statements = parse_file(filename, csv_output_mode)
-    process_statements(new_account_statements, dry_run_mode, debug_mode, tag)
+    process_statements(new_account_statements, dry_run_mode, debug_mode)
 
 
 def parse_ofx(filename: str, csv_output_mode: bool):
@@ -512,8 +488,8 @@ def print_usage_and_exit():
     exit(1)
 
 
-def process_import(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: bool, tag: str):
-    main(filename, dry_run_mode, debug_mode, csv_output_mode, tag)
+def process_import(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: bool):
+    main(filename, dry_run_mode, debug_mode, csv_output_mode)
     print()
 
 
@@ -530,6 +506,6 @@ if __name__ == "__main__":
             config.read("conf/properties.ini")
         except Exception as e:
             print("Failed to load properties configuration file:", str(e))
-        process_import(sys.argv[2], dry_run, debug, csv_output, config.get("Savings tags", "exclude"))
+        process_import(sys.argv[2], dry_run, debug, csv_output)
     else:
         print_usage_and_exit()
