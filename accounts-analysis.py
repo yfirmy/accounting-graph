@@ -239,21 +239,21 @@ def draw_savings_derivative(account_id, savings_derivative):
 
 
 def draw_balance_comparison(account_id, balance_compared):
-    min_grey_intensity = 0.85
-    max_grey_intensity = 0.35
-    a = (max_grey_intensity - min_grey_intensity) / max(1, len(balance_compared) - 1)
     fig, axes = plt.subplots()
     fig.set_figwidth(20)
     for month_age in reversed(range(0, len(balance_compared))):
         if month_age == 0:
             color = "red"
-            alpha = 1
+            linewidth = 2
         else:
-            color_intensity = max_grey_intensity - month_age * a
-            alpha = 0.5
-            color = (color_intensity, color_intensity, color_intensity)
-        if month_age < len(balance_compared):
-            plt.plot(range(1, len(balance_compared[month_age])), balance_compared[month_age][1:], color=color, alpha=alpha)
+            # Fade a cool charcoal towards neutral grey with a six-month
+            # half-life, keeping older curves visible regardless of history size.
+            recency = 2 ** (-(month_age - 1) / 6)
+            recent_color = (0.34, 0.36, 0.39)
+            color = tuple(0.82 + (channel - 0.82) * recency for channel in recent_color)
+            linewidth = 1 + 0.6 * recency
+        plt.plot(range(1, len(balance_compared[month_age])), balance_compared[month_age][1:],
+                 color=color, linewidth=linewidth, zorder=3 if month_age == 0 else 2)
     plt.hlines(y=0, xmin=1, xmax=31, colors='grey', linestyles='--')
     axes.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=(0, 1, 2, 3, 4, 5, 6)))
     axes.xaxis.set_minor_locator(mdates.DayLocator())
