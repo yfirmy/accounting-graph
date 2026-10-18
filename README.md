@@ -7,6 +7,32 @@ Scripts to store and graph personal bank accounts data
  - graph the balance evolution over time
  - graph a comparison of the balance evolution between current month and the previous months
 
+## Relancer les contrôles et graphiques sans import
+
+```sh
+python3 accounts-analysis.py
+
+# Contrôles seuls, sans modifier les bases ni générer de fichiers
+python3 accounts-analysis.py --dry-run
+```
+
+Sans `--import`, le programme analyse les bases `account_*.db` existantes dans
+le répertoire `database`, pour les comptes déclarés dans la configuration.
+Il recalcule les alertes avec les règles actuelles, remplace `TRANSACTION_ALERTS`
+et régénère les graphiques et `transaction_alerts.csv` dans `output`.
+Le remplacement des alertes est atomique pour chaque compte : un échec des
+contrôles laisse ses anciennes alertes intactes.
+
+Les transactions (y compris `MATCHED_RULES`) et les observations de solde restent
+inchangées. Les correspondances des règles sont recalculées en mémoire pour les
+contrôles. Aucun téléchargement n'est récupéré et aucune migration n'est lancée.
+Une base ancienne ou sans référence de solde nécessite d'abord un import OFX.
+
+Le contrôle du solde vérifie que les transactions stockées correspondent toujours
+au total enregistré lors de la dernière observation. Sans nouveau relevé, il ne
+peut pas comparer le résultat à un nouveau solde bancaire. Les graphiques utilisent
+la date et le solde de la dernière observation disponible.
+
 ## Récupération automatique des téléchargements OFX
 
 Ajouter les clés suivantes aux sections existantes de `conf/properties.ini` :

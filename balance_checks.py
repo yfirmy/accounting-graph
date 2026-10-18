@@ -34,6 +34,25 @@ def latest_observation(connection):
         FROM BALANCE_OBSERVATIONS ORDER BY AS_OF DESC, ID DESC LIMIT 1''').fetchone()
 
 
+def verify_stored_balance(connection):
+    """Check the latest accepted snapshot without pretending to obtain a new bank balance."""
+    previous = latest_observation(connection)
+    if previous is None:
+        raise ValueError('Aucun solde de référence enregistré : importer un fichier OFX au préalable.')
+    current_total = total_at(connection, previous[0])
+    if current_total != previous[2]:
+        raise ValueError('Les transactions stockées ne correspondent plus au dernier contrôle '
+                         '(écart de {:+.2f} EUR).\n'.format((current_total - previous[2]) / 100)
+                         + balance_recovery_hint(connection, previous[0]))
+    print('Cohérence des transactions avec la référence du {} UTC : OK. '
+          'Aucun nouveau solde bancaire à comparer.'.format(previous[0].replace('T', ' ')))
+    status = connection.execute('''SELECT STATUS FROM BALANCE_OBSERVATIONS
+        ORDER BY AS_OF DESC, ID DESC LIMIT 1''').fetchone()[0]
+    if status == 'baseline-unverified':
+        print('Cette référence initiale reste non vérifiée par rapport à un solde antérieur.')
+    return previous
+
+
 def insert_operations(history, connection):
     inserted = []
     for operations in history.operations.values():

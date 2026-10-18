@@ -108,11 +108,12 @@ def period_keys(day):
             'month': day.strftime('%Y-%m'), 'year': str(day.year)}
 
 
-def refresh_alerts(connection, account_id, rules):
+def refresh_alerts(connection, account_id, rules, persist=True, update_matches=True):
     """Recompute the full report, counting every matching transaction once per rule.
 
     Posting dates use the application's UTC convention; legacy DATE is retained.
     Same-day ties with no posting time are ordered by the transaction identifier.
+    Callers own the transaction. Replay can persist alerts without updating transactions.
     """
     transactions = []
     for identifier, date, posted, label, amount in connection.execute(
@@ -161,19 +162,21 @@ def refresh_alerts(connection, account_id, rules):
                         period_label, key, counts[period, key], rule.limits[period]))
             if reasons:
                 alerts.append((identifier, rule.name, when.isoformat(), label, amount, ' ; '.join(reasons)))
-    connection.executemany('UPDATE TRANSACTIONS SET MATCHED_RULES = ? WHERE ID = ?',
-                           [(json.dumps(names, ensure_ascii=False), identifier)
-                            for identifier, names in matched_rules.items()])
+    if persist and update_matches:
+        connection.executemany('UPDATE TRANSACTIONS SET MATCHED_RULES = ? WHERE ID = ?',
+                               [(json.dumps(names, ensure_ascii=False), identifier)
+                                for identifier, names in matched_rules.items()])
     for when, identifier, label, amount in transactions:
         if coverage_start is not None and when.date() < coverage_start:
             continue
         if DIRECT_DEBIT_LABEL.match(label) and not matched_rules[identifier]:
             alerts.append((identifier, UNEXPECTED_DIRECT_DEBIT, when.isoformat(), label, amount,
                            'Prélèvement inattendu : aucune règle active ne correspond à cette transaction'))
-    connection.execute('DELETE FROM TRANSACTION_ALERTS')
-    connection.executemany('''INSERT INTO TRANSACTION_ALERTS
-        (TRANSACTION_ID, RULE_ID, TRANSACTION_DATE, LABEL, AMOUNT_CENTS, REASONS)
-        VALUES (?, ?, ?, ?, ?, ?)''', alerts)
+    if persist:
+        connection.execute('DELETE FROM TRANSACTION_ALERTS')
+        connection.executemany('''INSERT INTO TRANSACTION_ALERTS
+            (TRANSACTION_ID, RULE_ID, TRANSACTION_DATE, LABEL, AMOUNT_CENTS, REASONS)
+            VALUES (?, ?, ?, ?, ?, ?)''', alerts)
     return alerts
 
 

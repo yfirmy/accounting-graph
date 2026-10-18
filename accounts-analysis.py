@@ -8,6 +8,9 @@ import configparser
 import os
 import re
 import argparse
+import math
+from contextlib import closing
+from pathlib import Path
 
 import dateutil
 import dateutil.relativedelta
@@ -16,7 +19,7 @@ import calendar
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from ofxparse import OfxParser
-from balance_checks import cents, latest_observation, reconcile_import
+from balance_checks import cents, latest_observation, reconcile_import, verify_stored_balance
 from legitimacy_checks import load_rules, refresh_alerts, export_alerts
 from ofx_input import collect_latest_ofx, print_file_dates
 
@@ -257,7 +260,12 @@ def draw_balance_comparison(account_id, balance_compared):
     axes.grid(True)
     axes.set_title("Comparaison du solde - " + get_account_name(account_id) + " (" + get_masked_account_id(account_id) + ")")
     axes.set_ylabel(r'Solde')
-    axes.set_ylim(0, 3500)
+    current_month_values = [value for value in balance_compared[0][1:] if value is not None]
+    current_min = min(current_month_values, default=0)
+    current_max = max(current_month_values, default=0)
+    lower_limit = current_min - 100 if current_min < -100 else -100
+    upper_limit = max(3000, math.ceil(current_max / 500) * 500)
+    axes.set_ylim(lower_limit, upper_limit)
 
     last_month = 0 if count_non_none(balance_compared[0]) >= 1 else 1
     last_day, last_balance = last_non_none(balance_compared[last_month])
@@ -435,14 +443,64 @@ def prepare_and_analyse_history(new_statements: AccountStatement, connection, dr
         print_transaction_alerts(new_statements.account_id, alerts)
     if dry_run_mode:
         return alerts
+    draw_stored_history(new_statements.account_id, connection, debug_mode)
+    return alerts
+
+
+def draw_stored_history(account_id, connection, debug_mode):
     latest = latest_observation(connection)
     as_of = datetime.datetime.fromisoformat(latest[0])
-    whole_statements = read_transactions_from_database(new_statements.account_id, connection, as_of)
+    whole_statements = read_transactions_from_database(account_id, connection, as_of)
     whole_statements.balance_date = as_of
     whole_statements.last_date = as_of.replace(hour=0, minute=0, second=0, microsecond=0)
     whole_statements.last_balance = latest[1] / 100
     analyse_operations(whole_statements, connection, debug_mode)
-    return alerts
+
+
+def replay_analysis(dry_run_mode=False, debug_mode=False):
+    rules = load_rules(config.get('Files', 'legitimacy_rules', fallback='legitimacy_rules.ini'))
+    directory = Path(config.get('Directories', 'database')).expanduser()
+    if not directory.is_dir():
+        raise ValueError('Répertoire des bases introuvable : ' + str(directory))
+    output = config.get('Directories', 'output') if not dry_run_mode else None
+    if not dry_run_mode and not output.strip():
+        raise ValueError('Missing output directory for transaction alerts')
+    databases = []
+    for path in sorted(directory.glob('account_*.db')):
+        if not path.is_file():
+            continue
+        account_id = path.stem[len('account_'):]
+        try:
+            get_account_config_key('Accounts', account_id)
+        except configparser.NoOptionError:
+            continue
+        databases.append((account_id, path))
+    if not databases:
+        raise ValueError('Aucune base existante correspondant aux comptes configurés.')
+    reporting = []
+    for account_id, path in databases:
+        print('Analyse sans import : {} ({})'.format(get_account_name(account_id), get_masked_account_id(account_id)))
+        mode = 'ro' if dry_run_mode else 'rw'
+        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=' + mode, uri=True)) as connection:
+            try:
+                # Replace alerts atomically; never migrate or insert banking data here.
+                with connection:
+                    connection.execute('BEGIN' if dry_run_mode else 'BEGIN IMMEDIATE')
+                    verify_stored_balance(connection)
+                    alerts = refresh_alerts(connection, account_id, rules,
+                                            persist=not dry_run_mode, update_matches=False)
+                print_transaction_alerts(account_id, alerts)
+                if not dry_run_mode:
+                    Path(output).expanduser().mkdir(parents=True, exist_ok=True)
+                    draw_stored_history(account_id, connection, debug_mode)
+                label = '{} ({})'.format(get_account_name(account_id), get_masked_account_id(account_id))
+                reporting.extend((label,) + row for row in alerts)
+            except sqlite3.OperationalError as exc:
+                raise ValueError('Impossible de relire {} : {}. Si le schéma est ancien, '
+                                 'effectuer d’abord un import OFX pour le migrer.'.format(path.name, exc)) from exc
+    if not dry_run_mode:
+        report_path = export_alerts(reporting, output)
+        print('Transaction alerts: {} — {}'.format(len(reporting), report_path))
 
 
 def main(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: bool):
@@ -491,8 +549,8 @@ def process_import(filename: str, dry_run_mode: bool, debug_mode: bool, csv_outp
 
 
 def cli(argv=None):
-    parser = argparse.ArgumentParser(description='Importer un relevé OFX et analyser les comptes.')
-    parser.add_argument(IMPORT_FLAG, dest='import_file', nargs='?', const='', required=True,
+    parser = argparse.ArgumentParser(description='Sans --import : rejouer les contrôles et graphiques, et remplacer les alertes sans importer de transactions.')
+    parser.add_argument(IMPORT_FLAG, dest='import_file', nargs='?', const='',
                         metavar='FICHIER_OFX', help='Sans chemin : récupérer le dernier téléchargement.')
     parser.add_argument(DRY_RUN_FLAG, action='store_true')
     parser.add_argument(DEBUG_FLAG, action='store_true')
@@ -502,6 +560,9 @@ def cli(argv=None):
         if not config.read('conf/properties.ini'):
             raise ValueError('Fichier conf/properties.ini introuvable.')
         filename = args.import_file
+        if filename is None:
+            replay_analysis(args.dry_run, args.debug)
+            return 0
         if filename:
             filename = os.path.expanduser(filename)
             print_file_dates(filename)
@@ -511,7 +572,7 @@ def cli(argv=None):
                 return 0
         process_import(str(filename), args.dry_run, args.debug, args.csv_output)
         return 0
-    except (OSError, ValueError, configparser.Error, re.error) as exc:
+    except (OSError, ValueError, configparser.Error, re.error, sqlite3.Error) as exc:
         print('\033[91mErreur : {}\033[0m'.format(exc))
         return 1
 
