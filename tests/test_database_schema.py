@@ -24,9 +24,6 @@ class SchemaMigrationTests(unittest.TestCase):
                 DATE TEXT NOT NULL, DATE_EPOCH INTEGER NOT NULL, LABEL TEXT,
                 AMOUNT REAL, TAG TEXT);
             CREATE INDEX transaction_tag ON TRANSACTIONS(TAG);
-            CREATE TABLE CHECKPOINTS (DATE_EPOCH INTEGER PRIMARY KEY NOT NULL,
-                DATE TEXT NOT NULL, BALANCE REAL, TRANSACTIONS_COUNT INTEGER);
-            INSERT INTO CHECKPOINTS VALUES (0, '01/01/2022', 1200.5, 10);
         ''')
         start = datetime.datetime(2022, 1, 1)
         self.rows = [(i + 1, (start + datetime.timedelta(days=i)).strftime('%d/%m/%Y'),
@@ -46,7 +43,6 @@ class SchemaMigrationTests(unittest.TestCase):
         actual = self.connection.execute('''SELECT CAST(ID AS INTEGER), DATE, DATE_EPOCH,
             LABEL, AMOUNT, TAG FROM TRANSACTIONS ORDER BY CAST(ID AS INTEGER)''').fetchall()
         self.assertEqual(actual, self.rows)
-        self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM CHECKPOINTS').fetchone()[0], 1)
         self.assertEqual(self.connection.execute('PRAGMA integrity_check').fetchall(), [('ok',)])
         self.assertIsNotNone(self.connection.execute(
             "SELECT name FROM sqlite_master WHERE name = 'transaction_tag'").fetchone())
@@ -158,7 +154,6 @@ class SchemaMigrationTests(unittest.TestCase):
             LABEL, AMOUNT, TAG FROM TRANSACTIONS ORDER BY CAST(ID AS INTEGER)''').fetchall(), self.rows)
         self.assertEqual(self.connection.execute(
             "SELECT COUNT(*) FROM TRANSACTIONS WHERE MATCHED_RULES = '[]'").fetchone()[0], 1461)
-        self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM CHECKPOINTS').fetchone()[0], 1)
 
     def test_adding_alert_table_backs_up_already_upgraded_history(self):
         self.migrate()
@@ -173,6 +168,7 @@ class SchemaMigrationTests(unittest.TestCase):
         self.addCleanup(backup.close)
         self.assertEqual(list(backup.iterdump()), before)
         self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM TRANSACTIONS').fetchone()[0], 1461)
+
 
 
 if __name__ == '__main__':

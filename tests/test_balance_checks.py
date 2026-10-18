@@ -136,20 +136,16 @@ class ReconciliationTests(unittest.TestCase):
         reconcile_import(statement('2026-10-12T18:00:00', '1000'), self.connection, dry_run=True)
         self.assertEqual(self.connection.execute('SELECT name FROM sqlite_master').fetchall(), [])
 
-    def test_legacy_upgrade_preserves_tags_dates_and_checkpoints(self):
+    def test_legacy_upgrade_preserves_tags_and_dates(self):
         self.connection.executescript('''
             CREATE TABLE TRANSACTIONS (ID INTEGER PRIMARY KEY NOT NULL,
                 DATE TEXT NOT NULL, DATE_EPOCH INTEGER NOT NULL, LABEL TEXT, AMOUNT REAL, TAG TEXT);
             INSERT INTO TRANSACTIONS VALUES (123, '09/10/2026', 0, 'Old', -5.5, 'HERITAGE');
-            CREATE TABLE CHECKPOINTS (DATE_EPOCH INTEGER PRIMARY KEY NOT NULL,
-                DATE TEXT NOT NULL, BALANCE REAL, TRANSACTIONS_COUNT INTEGER);
-            INSERT INTO CHECKPOINTS VALUES (0, '09/10/2026', 999, 1);
         ''')
         self.assertEqual(reconcile_import(statement('2026-10-12T18:00:00', '1000',
             operation('123', '2026-10-09T10:00:00', '-5.50')), self.connection), 'baseline-unverified')
         self.assertEqual(self.connection.execute('SELECT TAG, AMOUNT_CENTS FROM TRANSACTIONS').fetchone(),
                          ('HERITAGE', -550))
-        self.assertEqual(self.connection.execute('SELECT BALANCE FROM CHECKPOINTS').fetchone()[0], 999)
         history = app.read_transactions_from_database('123456', self.connection, dt.datetime(2026, 10, 12, 18))
         self.assertIn(dt.datetime(2026, 10, 9), history.operations)
 

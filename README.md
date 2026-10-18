@@ -25,7 +25,8 @@ contrôles laisse ses anciennes alertes intactes.
 
 Les transactions (y compris `MATCHED_RULES`) et les observations de solde restent
 inchangées. Les correspondances des règles sont recalculées en mémoire pour les
-contrôles. Aucun téléchargement n'est récupéré et aucune migration n'est lancée.
+contrôles. Aucun téléchargement n'est récupéré et aucune migration n'est lancée
+sans import.
 Une base ancienne ou sans référence de solde nécessite d'abord un import OFX.
 
 Le contrôle du solde vérifie que les transactions stockées correspondent toujours
@@ -108,9 +109,7 @@ are rolled back together for that account. Graphs are generated after validation
 a graph rendering failure does not undo an already accepted import.
 
 **Upgrade:** the first successful import establishes an explicitly unverified
-baseline. Legacy `CHECKPOINTS` are preserved but cannot be trusted as dated ledger
-balances because the old importer used the statement end date and discarded the
-time. Existing transactions and tags are retained, transaction IDs become text,
+baseline. Existing transactions and tags are retained, transaction IDs become text,
 and cent amounts are added automatically. Legacy transaction dates are read from
 `DATE` to avoid the previous local-time/UTC conversion problem. Old rows without
 a posting time use the start of their recorded day: already known transactions
@@ -141,7 +140,6 @@ back to the original database, while the independent backup remains available.
 `BALANCE_OBSERVATIONS` stores the bank balance, its exact date, the known
 transaction total and the reconciliation status at each import.
 `TRANSACTION_ALERTS` stores the current transaction legitimacy report.
-`CHECKPOINTS` is retained unchanged as historical data.
 `TRANSACTIONS_UPGRADE` exists only while replacing the old integer-ID table; after
 success it has become `TRANSACTIONS`, and after failure it is rolled back.
 

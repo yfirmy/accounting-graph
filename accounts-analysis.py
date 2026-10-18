@@ -483,7 +483,7 @@ def replay_analysis(dry_run_mode=False, debug_mode=False):
         mode = 'ro' if dry_run_mode else 'rw'
         with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=' + mode, uri=True)) as connection:
             try:
-                # Replace alerts atomically; never migrate or insert banking data here.
+                # Replace alerts atomically without inserting banking data.
                 with connection:
                     connection.execute('BEGIN' if dry_run_mode else 'BEGIN IMMEDIATE')
                     verify_stored_balance(connection)
