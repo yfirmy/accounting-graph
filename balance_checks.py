@@ -66,6 +66,21 @@ def observe(connection, as_of, balance, total, status):
         (as_of, balance, total, status))
 
 
+def balance_recovery_hint(connection, as_of):
+    reference = datetime.datetime.fromisoformat(as_of)
+    date = reference.strftime('%d/%m/%Y')
+    time = reference.strftime('%H:%M:%S')
+    row = connection.execute('''SELECT STATUS FROM BALANCE_OBSERVATIONS
+        WHERE AS_OF = ? ORDER BY ID DESC LIMIT 1''', (as_of,)).fetchone()
+    if row is None or row[0] == 'baseline-unverified':
+        context = 'Dernier solde de référence au {} inclus, à {} UTC (référence initiale non vérifiée).'.format(date, time)
+    else:
+        context = 'Solde vérifié jusqu’au {} inclus, à {} UTC.'.format(date, time)
+    return (context + '\nTéléchargez puis chargez un fichier OFX couvrant la période à partir du '
+            + date + ' inclus. '
+            'Les transactions déjà présentes ne seront pas dupliquées.')
+
+
 def reconcile_import(history, connection, dry_run=False, after_reconcile=None):
     """Validate and persist one account, or roll back the entire attempted import.
 
@@ -88,7 +103,7 @@ def reconcile_import(history, connection, dry_run=False, after_reconcile=None):
             expected = balance + latest_total - total
             if expected != previous[1]:
                 raise ValueError("Older statement cannot be reconciled with the latest balance; "
-                                 "no transactions imported")
+                                 "no transactions imported\n" + balance_recovery_hint(connection, previous[0]))
             status = 'historical-reconciled'
         else:
             expected = previous[1] + total - previous[2]
@@ -102,10 +117,12 @@ def reconcile_import(history, connection, dry_run=False, after_reconcile=None):
                 raise ValueError(
                     "Balance mismatch: expected {:.2f}, received {:.2f}, difference {:+.2f}; "
                     "no transactions imported".format(
-                        expected / 100, balance / 100, (balance - expected) / 100))
+                        expected / 100, balance / 100, (balance - expected) / 100)
+                    + '\n' + balance_recovery_hint(connection, previous[0]))
             # The same bank snapshot cannot change its balance silently.
             if as_of == previous[0] and balance != previous[1]:
-                raise ValueError("Conflicting bank balances at the same timestamp")
+                raise ValueError("Conflicting bank balances at the same timestamp\n"
+                                 + balance_recovery_hint(connection, previous[0]))
         observe(connection, as_of, balance, total, status)
         if previous is not None and as_of < previous[0]:
             observe(connection, previous[0], previous[1], latest_total, 'history-extended')

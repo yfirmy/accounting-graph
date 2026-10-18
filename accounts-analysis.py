@@ -7,6 +7,7 @@ import sys
 import configparser
 import os
 import re
+import argparse
 
 import dateutil
 import dateutil.relativedelta
@@ -17,6 +18,7 @@ import matplotlib.pyplot as plt
 from ofxparse import OfxParser
 from balance_checks import cents, latest_observation, reconcile_import
 from legitimacy_checks import load_rules, refresh_alerts, export_alerts
+from ofx_input import collect_latest_ofx, print_file_dates
 
 MONTHS_IN_YEAR = 12
 DAYS_IN_MONTH = 31
@@ -377,7 +379,7 @@ def open_database_connection(account_id: int):
 
 
 def parse_file(filename: str, csv_output_mode: bool):
-    if filename.endswith("ofx"):
+    if str(filename).lower().endswith('.ofx'):
         return parse_ofx(filename, csv_output_mode)
     else:
         raise ValueError("Invalid file format")
@@ -483,29 +485,36 @@ def parse_ofx(filename: str, csv_output_mode: bool):
     print()
     return parsed_account_statements
 
-def print_usage_and_exit():
-    print("usage: python3 accounts-analysis.py {} export_from_bank.ofx".format(IMPORT_FLAG))
-    exit(1)
-
-
 def process_import(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: bool):
     main(filename, dry_run_mode, debug_mode, csv_output_mode)
     print()
 
 
-if __name__ == "__main__":
-    if len(sys.argv) >= 3 and sys.argv[1] == IMPORT_FLAG:
-        dry_run = (len(sys.argv) >= 4 and sys.argv[3] == DRY_RUN_FLAG) or (
-                    len(sys.argv) == 5 and sys.argv[4] == DRY_RUN_FLAG)
-        debug = (len(sys.argv) >= 4 and sys.argv[3] == DEBUG_FLAG) or (
-                  len(sys.argv) == 5 and sys.argv[4] == DEBUG_FLAG)
-        csv_output = (len(sys.argv) >= 4 and sys.argv[3] == CSV_OUTPUT_FLAG) or (
-                 len(sys.argv) == 5 and sys.argv[4] == CSV_OUTPUT_FLAG)
+def cli(argv=None):
+    parser = argparse.ArgumentParser(description='Importer un relevé OFX et analyser les comptes.')
+    parser.add_argument(IMPORT_FLAG, dest='import_file', nargs='?', const='', required=True,
+                        metavar='FICHIER_OFX', help='Sans chemin : récupérer le dernier téléchargement.')
+    parser.add_argument(DRY_RUN_FLAG, action='store_true')
+    parser.add_argument(DEBUG_FLAG, action='store_true')
+    parser.add_argument(CSV_OUTPUT_FLAG, action='store_true')
+    args = parser.parse_args(argv)
+    try:
+        if not config.read('conf/properties.ini'):
+            raise ValueError('Fichier conf/properties.ini introuvable.')
+        filename = args.import_file
+        if filename:
+            filename = os.path.expanduser(filename)
+            print_file_dates(filename)
+        else:
+            filename = collect_latest_ofx(config, dry_run=args.dry_run)
+            if filename is None:
+                return 0
+        process_import(str(filename), args.dry_run, args.debug, args.csv_output)
+        return 0
+    except (OSError, ValueError, configparser.Error, re.error) as exc:
+        print('\033[91mErreur : {}\033[0m'.format(exc))
+        return 1
 
-        try:
-            config.read("conf/properties.ini")
-        except Exception as e:
-            print("Failed to load properties configuration file:", str(e))
-        process_import(sys.argv[2], dry_run, debug, csv_output)
-    else:
-        print_usage_and_exit()
+
+if __name__ == "__main__":
+    sys.exit(cli())

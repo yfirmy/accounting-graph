@@ -7,6 +7,54 @@ Scripts to store and graph personal bank accounts data
  - graph the balance evolution over time
  - graph a comparison of the balance evolution between current month and the previous months
 
+## Récupération automatique des téléchargements OFX
+
+Ajouter les clés suivantes aux sections existantes de `conf/properties.ini` :
+
+```ini
+[Directories]
+downloads = ~/Downloads
+input = /Volumes/MonDisque/Comptes/OFX
+
+[Files]
+ofx_filename_regex = ^CA[0-9]{8}_[0-9]{6}\.ofx$
+```
+
+La regex correspond à un nom tel que `CA20261015_090958.ofx`. Elle s'applique au
+nom complet, sans le chemin, et est sensible à la casse. `~` est accepté dans les
+chemins. `input` doit être renseigné avant le premier import automatique.
+
+```sh
+# Dernier téléchargement correspondant, déplacement dans input, puis import
+python3 accounts-analysis.py --import
+
+# Simulation : analyse depuis Downloads, sans déplacement ni modifications de base
+python3 accounts-analysis.py --import --dry-run
+
+# Import explicite : fichier utilisé sur place, sans déplacement
+python3 accounts-analysis.py --import /chemin/vers/releve.ofx
+```
+
+Le fichier choisi est celui dont la **date de modification est la plus récente**,
+indépendamment de la date inscrite dans son nom. À date égale, le nom le plus grand
+dans l'ordre lexical départage les candidats. Seuls les fichiers ordinaires
+directement dans `downloads` sont examinés, sans sous-répertoires ni liens
+symboliques. Les dates de modification et de création (si disponible), ainsi que
+l'ancienneté, sont affichées avant toute opération. Les dates du relevé et du solde
+continuent d'être affichées lors de la lecture OFX.
+
+Si **le même nom existe déjà dans `input`**, le programme s'arrête avec un message,
+sans écraser le fichier ni chercher un candidat plus ancien. Sans correspondance,
+il s'arrête également sans importer. Un fichier archivé n'est pas forcément déjà
+importé en base : cette détection repose uniquement sur sa présence dans `input`.
+
+Le déplacement fonctionne aussi vers un autre volume : copie sans écrasement,
+conservation de la date de modification, puis suppression de l'original après
+réussite. Si la copie échoue ou si le téléchargement change pendant la copie,
+l'original reste disponible. En cas d'échec ultérieur de l'analyse, l'OFX reste
+archivé : utiliser la commande avec son chemin explicite pour relancer l'import.
+`--dry-run` ne crée pas le répertoire `input` et ne déplace aucun fichier.
+
 ## Balance verification
 
 The ledger balance and its exact OFX date (`LEDGERBAL/DTASOF`) are recorded in

@@ -73,12 +73,24 @@ class ReconciliationTests(unittest.TestCase):
 
     def test_unexplained_difference_rolls_back_all_operations(self):
         self.baseline()
-        with self.assertRaisesRegex(ValueError, 'Balance mismatch'):
+        with self.assertRaisesRegex(ValueError, 'Balance mismatch') as failure:
             reconcile_import(statement('2026-10-12T18:00:00', '700',
                 operation('late', '2026-10-09T10:00:00', '-10'),
                 operation('new', '2026-10-12T10:00:00', '-20')), self.connection)
+        self.assertIn('référence initiale non vérifiée', str(failure.exception))
+        self.assertIn('à partir du 09/10/2026 inclus', str(failure.exception))
         self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM TRANSACTIONS').fetchone()[0], 0)
         self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM BALANCE_OBSERVATIONS').fetchone()[0], 1)
+
+    def test_balance_failure_recommends_last_successful_date_not_failed_date(self):
+        self.baseline()
+        reconcile_import(statement('2026-10-12T18:00:00', '990',
+            operation('known', '2026-10-12T12:00:00', '-10')), self.connection)
+        with self.assertRaises(ValueError) as failure:
+            reconcile_import(statement('2026-10-15T18:00:00', '900'), self.connection)
+        self.assertIn('Solde vérifié jusqu’au 12/10/2026 inclus, à 18:00:00 UTC', str(failure.exception))
+        self.assertIn('à partir du 12/10/2026 inclus', str(failure.exception))
+        self.assertEqual(latest_observation(self.connection)[0], '2026-10-12T18:00:00.000000')
 
     def test_changed_duplicate_rolls_back_prior_insert(self):
         op = operation('known', '2026-10-09T10:00:00', '-5')
