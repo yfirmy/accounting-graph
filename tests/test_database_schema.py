@@ -169,6 +169,21 @@ class SchemaMigrationTests(unittest.TestCase):
         self.assertEqual(list(backup.iterdump()), before)
         self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM TRANSACTIONS').fetchone()[0], 1461)
 
+    def test_adding_splitwise_tracking_preserves_transactions_and_backs_up(self):
+        self.migrate()
+        self.connection.execute('DROP TABLE SPLITWISE_EXPORTS')
+        self.connection.commit()
+        before = list(self.connection.iterdump())
+        transactions = self.connection.execute('SELECT * FROM TRANSACTIONS').fetchall()
+        backups = set(self.path.parent.glob('backups/*.db'))
+        self.migrate()
+        added = set(self.path.parent.glob('backups/*.db')) - backups
+        self.assertEqual(len(added), 1)
+        with contextlib.closing(sqlite3.connect(str(added.pop()))) as backup:
+            self.assertEqual(list(backup.iterdump()), before)
+        self.assertEqual(self.connection.execute('SELECT * FROM TRANSACTIONS').fetchall(), transactions)
+        self.assertEqual(self.connection.execute('SELECT * FROM SPLITWISE_EXPORTS').fetchall(), [])
+
 
 
 if __name__ == '__main__':

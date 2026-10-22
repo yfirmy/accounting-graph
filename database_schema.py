@@ -27,8 +27,11 @@ def backup_before_upgrade(connection, dry_run=False):
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'BALANCE_OBSERVATIONS'").fetchone()
     alerts = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'TRANSACTION_ALERTS'").fetchone()
+    exports = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'SPLITWISE_EXPORTS'").fetchone()
     if (columns.get('ID', '').upper() != 'INTEGER'
-            and {'POSTED_AT', 'AMOUNT_CENTS', 'MATCHED_RULES'} <= columns.keys() and observations and alerts):
+            and {'POSTED_AT', 'AMOUNT_CENTS', 'MATCHED_RULES'} <= columns.keys()
+            and observations and alerts and exports):
         return None
     filename = next(row[2] for row in connection.execute('PRAGMA database_list') if row[1] == 'main')
     if not filename:
@@ -116,6 +119,13 @@ def _prepare_schema(connection):
         AMOUNT_CENTS INTEGER NOT NULL, REASONS TEXT NOT NULL,
         CHECKED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (TRANSACTION_ID, RULE_ID))''')
+    connection.execute('''CREATE TABLE IF NOT EXISTS SPLITWISE_EXPORTS (
+        TRANSACTION_ID TEXT PRIMARY KEY NOT NULL, RULE_ID TEXT,
+        CATEGORY TEXT NOT NULL CHECK (CATEGORY IN ('auto', 'confirm', 'skip')),
+        STATE TEXT NOT NULL CHECK (STATE IN
+            ('pending', 'sending', 'uncertain', 'submitted', 'linked', 'skipped')),
+        MARKER TEXT NOT NULL UNIQUE, PAYLOAD TEXT, EXPENSE_ID TEXT,
+        UPDATED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
     # Restore triggers only after backfilling the new columns, so migration
     # does not fire application-specific update triggers on historical rows.
     for (sql,) in objects:

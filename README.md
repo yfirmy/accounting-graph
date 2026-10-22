@@ -287,3 +287,146 @@ Run the regression suite with:
 ```sh
 MPLBACKEND=Agg python3 -m unittest discover -s tests -v
 ```
+
+## Envoi des nouvelles dépenses à Splitwise
+
+L'intégration est facultative et désactivée par défaut. Elle intervient uniquement
+lors d'un import OFX, après la validation du solde et des contrôles locaux et après
+l'enregistrement des transactions. Elle utilise exclusivement le partage
+**« j'ai tout payé, partage égal entre tous les membres du groupe »**. Le payeur
+est l'utilisateur de la clé API. Les montants sont en EUR ; un relevé d'une autre
+devise ou sans devise déclarée est refusé lorsque l'intégration est activée.
+
+Copier `examples/splitwise_rules.ini` vers `conf/splitwise_rules.ini`, puis ajouter
+à la section existante de `conf/properties.ini` :
+
+```ini
+[Files]
+splitwise_rules = conf/splitwise_rules.ini
+```
+
+Renseigner dans ce nouveau fichier le `group_id` Splitwise, les masques des
+comptes et les règles, puis passer `enabled` à `true`. Un `group_id` différent
+peut être donné par règle. L'identifiant du groupe se trouve dans son URL sur le
+site Splitwise ou via `get_groups` de l'API.
+
+Créer une application et une clé personnelle depuis
+[Splitwise Apps](https://secure.splitwise.com/apps), puis définir la variable
+d'environnement `SPLITWISE_API_KEY` dans le terminal qui lance l'application.
+Ne pas mettre la clé dans les fichiers versionnés. Le nom de cette variable est
+configurable avec `token_env`. Sans clé, l'import bancaire peut aboutir et les
+envois restent en attente. Si le chemin de règles est renseigné mais le fichier
+est absent ou invalide, l'import s'arrête avant de modifier les données.
+
+Une règle correspond à un compte (avec `X` pour masquer chaque chiffre), une
+regex recherchée n'importe où dans le libellé et des jours de semaine
+(`1=lundi`, ..., `7=dimanche`). `start_date`, facultatif, exclut les opérations
+plus anciennes. **La date utilisée est la date de comptabilisation `DTPOSTED`
+disponible dans l'OFX, suivant la convention UTC de l'application. Ce n'est pas
+une date de valeur distincte ni nécessairement le jour de l'achat.** Les jours de
+semaine doivent donc être choisis en tenant compte des dates présentes dans les
+relevés de la banque.
+
+Les règles sont évaluées dans l'ordre du fichier ; la première correspondant au
+compte, au libellé, au jour et à la date de démarrage s'applique. Sans règle, la
+transaction est « non soumise ». Les crédits et montants nuls sont également
+exclus. Les valeurs `min_amount` et `max_amount` sont positives, en euros, avec
+bornes incluses : `4` à `14` correspond aux débits de `-14` à `-4`.
+
+- `action = auto` : soumission automatique si le montant est dans l'intervalle.
+  `max_amount` est obligatoire pour éviter une autorisation sans plafond.
+- `action = confirm` : confirmation interactive obligatoire.
+- `action = skip` : non soumise.
+- `outside_amount = confirm` (par défaut) ou `skip` : comportement hors intervalle.
+
+L'exemple fourni soumet automatiquement une boulangerie le dimanche entre 4 et
+14 euros, demande confirmation à 22 euros et exclut le lundi. `description` est
+un libellé neutre choisi dans la configuration, par exemple « Boulangerie ». Le
+libellé bancaire brut, le numéro de compte et l'identifiant OFX ne sont jamais
+copiés vers Splitwise. La note indique « Cette dépense a été ajoutée automatiquement
+à partir du relevé de compte. », suivie d'un marqueur aléatoire de suivi,
+sans information personnelle. Ne pas mettre d'information personnelle dans les
+descriptions configurées.
+
+La date de la dépense envoyée à Splitwise est celle de la transaction du relevé,
+jamais la date d'import ni celle d'une reprise d'envoi. Elle est transmise à midi
+UTC pour conserver le même jour dans l'affichage Europe/Paris.
+
+Chaque règle peut aussi définir `category_id`, un entier positif correspondant
+à une **sous-catégorie** Splitwise (et donc à son icône), par exemple :
+
+```ini
+# Dans la section de la règle concernée ; remplacer par l'identifiant souhaité.
+category_id = 15
+```
+
+La liste des identifiants et noms est disponible via
+[get_categories](https://secure.splitwise.com/api/v3.0/get_categories) : utiliser
+un identifiant contenu dans `subcategories`, pas celui de la catégorie parente.
+Le numéro ci-dessus est illustratif. Sans `category_id`, le champ est omis et
+Splitwise utilise sa catégorie par défaut. Ce réglage s'applique aux nouvelles
+transactions évaluées ; les dépenses déjà envoyées ou en attente conservent leur
+contenu enregistré.
+
+Avant chaque création, l'application consulte toutes les pages des dépenses
+accessibles à l'utilisateur autour de cette date, tous groupes confondus. Une
+dépense active de même jour, même devise et même montant total impose une
+confirmation, même pour une règle automatique. Les remboursements et dépenses
+supprimées ne sont pas considérés comme des doublons potentiels.
+
+Dans le terminal :
+
+- `create` autorise la création, y compris si une dépense similaire existe ;
+- le numéro proposé rattache la transaction à une dépense existante sans la recréer ;
+- `skip` exclut définitivement cet envoi ;
+- Entrée ou `later` reporte la décision.
+
+Sans terminal interactif, aucune confirmation n'est supposée : les transactions
+qui en exigent une restent en attente. Les dépenses automatiques sans doublon
+peuvent être envoyées sans interaction.
+
+La table `SPLITWISE_EXPORTS` conserve, pour chaque nouvelle transaction évaluée,
+la règle et la catégorie (`auto`, `confirm`, `skip`), le contenu prévu pour l'API,
+un marqueur aléatoire, l'état de traitement et l'identifiant de dépense Splitwise.
+Elle est ajoutée au prochain import avec la sauvegarde préalable habituelle ;
+les transactions historiques restent intactes et ne sont pas envoyées rétroactivement.
+Un réimport d'opérations déjà connues ne crée aucune nouvelle candidature.
+
+Les états sont `pending` (en attente), `sending` (envoi commencé), `uncertain`
+(résultat inconnu), `submitted` (création confirmée), `linked` (rattachée à une
+saisie existante) et `skipped` (exclue). Une dépense soumise ou rattachée n'est plus
+envoyée. Le marqueur permet de retrouver une création après une coupure réseau.
+Si le résultat d'un envoi reste incertain et qu'aucun marqueur n'est retrouvé,
+l'application demande une confirmation avant toute nouvelle tentative. Un verrou
+empêche deux instances utilisant le même répertoire de bases d'envoyer simultanément.
+L'API ne fournit pas ici de garantie d'idempotence : une saisie concurrente sur
+iPhone, un retard de visibilité ou une modification de date/note peut encore
+nécessiter une vérification manuelle.
+
+Un échec réseau ne remet pas en cause un import bancaire déjà validé. Pour
+reprendre les envois en attente, réimporter explicitement le même fichier OFX :
+
+```sh
+python3 accounts-analysis.py --import /chemin/vers/releve.ofx
+```
+
+La reprise concerne les comptes présents dans ce fichier. Les envois en attente
+conservent la règle, le groupe et le contenu fixés lors de leur premier import :
+modifier les règles affecte les nouvelles transactions, pas les candidatures
+existantes. Désactiver l'intégration suspend aussi les reprises.
+
+Sans `--import`, aucun appel Splitwise n'est effectué. Avec `--dry-run`, les
+catégories sont évaluées localement, mais aucun appel réseau, aucune confirmation
+ni aucun suivi persistant n'est effectué ; les doublons distants ne sont donc pas
+vérifiés dans ce mode.
+
+Référence : [documentation officielle de l'API Splitwise](https://dev.splitwise.com/),
+notamment `get_expenses` et `create_expense`. Les erreurs renvoyées dans une réponse
+HTTP 200 sont également contrôlées.
+En cas d'échec, le diagnostic affiche l'opération API concernée, le type et le
+message de l'erreur, ainsi que le statut et le corps de la réponse HTTP lorsqu'ils
+sont disponibles. La clé API est masquée dans ces diagnostics.
+Les connexions HTTPS utilisent explicitement les certificats racines de `certifi`
+(déjà inclus dans les dépendances), notamment pour les installations Python macOS
+dont le magasin de certificats par défaut n'est pas configuré. La validation du
+certificat et du nom du serveur reste activée.

@@ -22,6 +22,7 @@ from ofxparse import OfxParser
 from balance_checks import cents, latest_observation, reconcile_import, verify_stored_balance
 from legitimacy_checks import load_rules, refresh_alerts, export_alerts
 from ofx_input import collect_latest_ofx, print_file_dates
+from splitwise_sync import load_settings as load_splitwise_settings, enqueue, sync_pending
 
 MONTHS_IN_YEAR = 12
 DAYS_IN_MONTH = 31
@@ -395,6 +396,7 @@ def parse_file(filename: str, csv_output_mode: bool):
 
 def process_statements(new_account_statements: [AccountStatement], dry_run_mode: bool, debug_mode: bool):
     rules = load_rules(config.get('Files', 'legitimacy_rules', fallback='legitimacy_rules.ini'))
+    splitwise = load_splitwise_settings(config.get('Files', 'splitwise_rules', fallback=None))
     output_directory = config.get('Directories', 'output') if not dry_run_mode else None
     if not dry_run_mode and not output_directory.strip():
         raise ValueError('Missing output directory for transaction alerts')
@@ -402,7 +404,8 @@ def process_statements(new_account_statements: [AccountStatement], dry_run_mode:
     for new_account_statement in new_account_statements:
         with open_database_connection(new_account_statement.account_id) as connection:
             alerts = prepare_and_analyse_history(
-                new_account_statement, connection, dry_run_mode, debug_mode, rules=rules)
+                new_account_statement, connection, dry_run_mode, debug_mode, rules=rules,
+                splitwise=splitwise)
             account_label = '{} ({})'.format(get_account_name(new_account_statement.account_id),
                                             get_masked_account_id(new_account_statement.account_id))
             reporting_by_account[new_account_statement.account_id] = [(account_label,) + row for row in alerts]
@@ -425,12 +428,17 @@ def print_transaction_alerts(account_id, alerts):
         print("\n")
 
 
-def prepare_and_analyse_history(new_statements: AccountStatement, connection, dry_run_mode: bool, debug_mode: bool, rules=None):
+def prepare_and_analyse_history(new_statements: AccountStatement, connection, dry_run_mode: bool, debug_mode: bool, rules=None, splitwise=None):
+    if splitwise is not None and getattr(new_statements, 'currency', 'EUR') != 'EUR':
+        raise ValueError('Splitwise : cette intégration exige un relevé en EUR (CURDEF).')
     alerts = []
     def check_legitimacy(database):
         alerts.extend(refresh_alerts(database, new_statements.account_id, rules))
+    def queue_splitwise(database, operation):
+        enqueue(database, splitwise, new_statements.account_id, operation)
     status = reconcile_import(new_statements, connection, dry_run=dry_run_mode,
-                              after_reconcile=check_legitimacy if rules is not None else None)
+                              after_reconcile=check_legitimacy if rules is not None else None,
+                              on_new_transaction=queue_splitwise if splitwise is not None else None)
     messages = {
         'baseline-unverified': 'Initial bank balance recorded; no reliable previous reference to verify it.',
         'reconciled': 'Balance reconciled exactly.',
@@ -443,6 +451,7 @@ def prepare_and_analyse_history(new_statements: AccountStatement, connection, dr
         print_transaction_alerts(new_statements.account_id, alerts)
     if dry_run_mode:
         return alerts
+    sync_pending(connection, splitwise)
     draw_stored_history(new_statements.account_id, connection, debug_mode)
     return alerts
 
@@ -515,6 +524,7 @@ def parse_ofx(filename: str, csv_output_mode: bool):
         for account in ofx.accounts:
             account_statement = AccountStatement(account.account_id)
             statement = account.statement
+            account_statement.currency = getattr(statement, 'currency', '').upper()
             print("\n" + '\033[34m' + "Account " + account.account_id + " \"" + get_account_name(account.account_id) + " ->| " + str(statement.end_date) +
                   "\": " + '\033[0m')
             if getattr(statement, 'discarded_entries', []):

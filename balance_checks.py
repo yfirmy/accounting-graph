@@ -53,7 +53,7 @@ def verify_stored_balance(connection):
     return previous
 
 
-def insert_operations(history, connection):
+def insert_operations(history, connection, on_new_transaction=None):
     inserted = []
     for operations in history.operations.values():
         for operation in operations:
@@ -76,6 +76,8 @@ def insert_operations(history, connection):
                  int(operation.date.replace(tzinfo=datetime.timezone.utc).timestamp()),
                  operation.label, amount / 100, posted_at, amount))
             inserted.append((posted_at, amount))
+            if on_new_transaction is not None:
+                on_new_transaction(connection, operation)
     return inserted
 
 
@@ -100,7 +102,7 @@ def balance_recovery_hint(connection, as_of):
             'Les transactions déjà présentes ne seront pas dupliquées.')
 
 
-def reconcile_import(history, connection, dry_run=False, after_reconcile=None):
+def reconcile_import(history, connection, dry_run=False, after_reconcile=None, on_new_transaction=None):
     """Validate and persist one account, or roll back the entire attempted import.
 
     Total snapshots measure newly known amounts, including late postings. An
@@ -111,7 +113,7 @@ def reconcile_import(history, connection, dry_run=False, after_reconcile=None):
         as_of = timestamp(history.balance_date)
         balance = cents(history.last_balance)
         previous = latest_observation(connection)
-        inserted = insert_operations(history, connection)
+        inserted = insert_operations(history, connection, on_new_transaction=on_new_transaction)
         total = total_at(connection, as_of)
         if previous is None:
             status = 'baseline-unverified'
