@@ -17,7 +17,8 @@ import certifi
 from money import cents
 
 
-IMPORT_NOTE = 'Cette dépense a été ajoutée automatiquement à partir du relevé de compte.'
+IMPORT_NOTE = 'Dépense ajoutée automatiquement à partir du relevé de compte.'
+PURCHASE_DATE_MAX_DELAY_DAYS = 6
 
 
 def expense_note(marker):
@@ -38,6 +39,7 @@ class Rule:
     group_id: int
     start_date: object
     category_id: object = None
+    purchase_date_regex: object = None
 
 
 @dataclass
@@ -70,7 +72,7 @@ def load_settings(filename):
         try:
             allowed = {'account', 'label_regex', 'weekdays', 'min_amount', 'max_amount',
                        'action', 'outside_amount', 'description', 'group_id', 'start_date', 'enabled',
-                       'category_id'}
+                       'category_id', 'purchase_date_regex'}
             if set(s) - allowed:
                 raise ValueError('option inconnue')
             if not s.getboolean('enabled', fallback=True):
@@ -103,21 +105,56 @@ def load_settings(filename):
             category_id = s.getint('category_id') if 'category_id' in s else None
             if category_id is not None and category_id <= 0:
                 raise ValueError('category_id doit être un identifiant de sous-catégorie positif')
+            purchase_regex = None
+            if 'purchase_date_regex' in s:
+                purchase_regex = re.compile(s['purchase_date_regex'])
+                if not {'day', 'month'} <= purchase_regex.groupindex.keys():
+                    raise ValueError('purchase_date_regex exige les groupes nommés day et month')
             rules.append(Rule(name, account, label, weekdays, minimum, maximum,
-                              action, outside, description, group_id, start, category_id))
+                              action, outside, description, group_id, start, category_id,
+                              purchase_regex))
         except (KeyError, ValueError, re.error) as exc:
             raise ValueError('Règle Splitwise [{}] : {}'.format(name, exc)) from exc
     return Settings(token_env, rules)
 
 
+def expense_day(rule, operation):
+    """Resolve a purchase date relative to its posting date, never today's date."""
+    posted = operation.date.date()
+    if rule is None or rule.purchase_date_regex is None:
+        return posted
+    match = rule.purchase_date_regex.search(operation.label or '')
+    if match:
+        try:
+            day, month = int(match.group('day')), int(match.group('month'))
+        except (ValueError, TypeError):
+            day, month = 0, 0
+        for year in (posted.year, posted.year - 1):
+            try:
+                purchase = dt.date(year, month, day)
+            except ValueError:
+                continue
+            if 0 <= (posted - purchase).days <= PURCHASE_DATE_MAX_DELAY_DAYS:
+                return purchase
+    raise ValueError('Splitwise [{}], transaction {} : date d’achat absente, invalide ou hors '
+                     'du délai global de {} jours précédant le {}. Vérifier purchase_date_regex '
+                     'et la date dans le libellé.'.format(
+                         rule.name, operation.id, PURCHASE_DATE_MAX_DELAY_DAYS, posted))
+
+
 def classify(settings, account, operation):
     amount = -cents(operation.value)
-    day = operation.date.date()
     if amount <= 0:
         return 'skip', None
     for rule in settings.rules:
-        if (rule.account.fullmatch(str(account)) and rule.label.search(operation.label or '')
-                and day.isoweekday() in rule.weekdays
+        if not (rule.account.fullmatch(str(account)) and rule.label.search(operation.label or '')):
+            continue
+        # Purchases cannot be after their posting date, so these are excluded
+        # even before attempting to parse older, potentially different labels.
+        if rule.start_date is not None and operation.date.date() < rule.start_date:
+            continue
+        day = expense_day(rule, operation)
+        if (day.isoweekday() in rule.weekdays
                 and (rule.start_date is None or day >= rule.start_date)):
             action = rule.action
             if action != 'skip' and (amount < rule.minimum or
@@ -130,6 +167,7 @@ def classify(settings, account, operation):
 def enqueue(connection, settings, account, operation):
     """Called only for a new transaction, inside the atomic banking import."""
     action, rule = classify(settings, account, operation)
+    day = expense_day(rule, operation)
     marker = 'accounting-graph:' + uuid.uuid4().hex
     payload = None
     if action != 'skip':
@@ -138,11 +176,11 @@ def enqueue(connection, settings, account, operation):
         if str(account) in re.sub(r'\D', '', description):
             raise ValueError('La description Splitwise contient le numéro de compte')
         amount = -cents(operation.value)
-        # Use the statement's transaction day, never the import/retry date.
+        # Use the resolved purchase/posting day, never the import/retry date.
         # Noon UTC preserves that calendar day when displayed in Europe/Paris.
         payload = {'cost': '{}.{:02d}'.format(amount // 100, amount % 100),
                    'description': description, 'details': expense_note(marker),
-                   'date': operation.date.date().isoformat() + 'T12:00:00Z',
+                   'date': day.isoformat() + 'T12:00:00Z',
                    'currency_code': 'EUR', 'group_id': rule.group_id, 'split_equally': True}
         if rule.category_id is not None:
             payload['category_id'] = rule.category_id
@@ -152,7 +190,7 @@ def enqueue(connection, settings, account, operation):
         (str(operation.id), rule.name if rule else None, action,
          'skipped' if action == 'skip' else 'pending', marker,
          json.dumps(payload, ensure_ascii=False) if payload else None))
-    print('Splitwise : {} | {} | {}'.format(operation.date.date(),
+    print('Splitwise : {} | {} | {}'.format(day,
           rule.description if rule and rule.description else 'Transaction',
           {'auto': 'soumise automatiquement après validation', 'confirm': 'nécessite confirmation',
            'skip': 'non soumise'}[action]))

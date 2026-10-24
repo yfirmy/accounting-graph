@@ -321,11 +321,37 @@ est absent ou invalide, l'import s'arrête avant de modifier les données.
 Une règle correspond à un compte (avec `X` pour masquer chaque chiffre), une
 regex recherchée n'importe où dans le libellé et des jours de semaine
 (`1=lundi`, ..., `7=dimanche`). `start_date`, facultatif, exclut les opérations
-plus anciennes. **La date utilisée est la date de comptabilisation `DTPOSTED`
+plus anciennes. **Par défaut, la date utilisée est la date de comptabilisation `DTPOSTED`
 disponible dans l'OFX, suivant la convention UTC de l'application. Ce n'est pas
 une date de valeur distincte ni nécessairement le jour de l'achat.** Les jours de
 semaine doivent donc être choisis en tenant compte des dates présentes dans les
-relevés de la banque.
+relevés de la banque, sauf si l'extraction de la date d'achat ci-dessous est activée.
+
+Pour les paiements par carte dont le libellé se termine par une date `JJ/MM`,
+ajouter dans chaque règle concernée :
+
+```ini
+purchase_date_regex = (?<!\d)(?P<day>[0-9]{2})/(?P<month>[0-9]{2})\s*$
+```
+
+La regex doit contenir les groupes nommés `day` et `month`. L'année est déduite
+de la date bancaire de la transaction, jamais de la date d'exécution : un achat
+`31/12` comptabilisé le 3 janvier 2027 devient le 31 décembre 2026. Cela fonctionne
+aussi pour les relevés anciens et les années bissextiles. La date d'achat ne peut
+pas être postérieure à la date bancaire. Le délai maximal autorisé entre achat et
+comptabilisation est fixé globalement à **six jours inclus**, via la constante
+`PURCHASE_DATE_MAX_DELAY_DAYS` dans `splitwise_sync.py`. Il n'est pas configurable
+par règle ; l'ancien paramètre `purchase_date_max_delay_days` doit être retiré des INI.
+
+Cette date d'achat sert à `weekdays`, `start_date`, à la date envoyée et à la
+recherche des doublons. Activer les mêmes options sur les règles complémentaires
+d'un même commerçant pour qu'elles utilisent toutes le jour d'achat.
+Si une règle correspond au compte et au libellé mais que sa date d'achat est
+absente, invalide ou hors délai, l'import du compte est annulé avec un message
+explicite, avant tout envoi pour ce compte. Il n'y a pas de remplacement silencieux
+par la date bancaire. Les opérations comptabilisées avant `start_date` sont ignorées.
+Les dates stockées dans `TRANSACTIONS` et les contrôles de solde restent inchangés.
+Les dépenses déjà envoyées ou en attente ne sont pas recalculées.
 
 Les règles sont évaluées dans l'ordre du fichier ; la première correspondant au
 compte, au libellé, au jour et à la date de démarrage s'applique. Sans règle, la
@@ -348,7 +374,8 @@ copiés vers Splitwise. La note indique « Cette dépense a été ajoutée autom
 sans information personnelle. Ne pas mettre d'information personnelle dans les
 descriptions configurées.
 
-La date de la dépense envoyée à Splitwise est celle de la transaction du relevé,
+La date de la dépense envoyée à Splitwise est la date d'achat extraite si configurée,
+sinon celle de la transaction du relevé,
 jamais la date d'import ni celle d'une reprise d'envoi. Elle est transmise à midi
 UTC pour conserver le même jour dans l'affichage Europe/Paris.
 

@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 
 from balance_checks import reconcile_import
 from database_schema import import_transaction
-from splitwise_sync import APIError, Client, IMPORT_NOTE, ask, classify, enqueue, load_settings, sync_pending
+from splitwise_sync import APIError, Client, IMPORT_NOTE, ask, classify, enqueue, expense_day, load_settings, sync_pending
 
 spec = importlib.util.spec_from_file_location('splitwise_app', Path(__file__).resolve().parents[1] / 'accounts-analysis.py')
 app = importlib.util.module_from_spec(spec)
@@ -80,6 +80,75 @@ class SplitwiseTests(unittest.TestCase):
                 self.assertEqual(classify(self.settings, '123456', self.operation(amount))[0], expected)
         self.assertEqual(classify(self.settings, '123456', self.operation(day='2026-10-19'))[0], 'skip')
         self.assertEqual(classify(self.settings, '654321', self.operation())[0], 'skip')
+
+    def purchase_settings(self, extra=''):
+        self.filename.write_text(CONFIG + r'purchase_date_regex = (?<!\d)(?P<day>[0-9]{2})/(?P<month>[0-9]{2})\s*$' + '\n' + extra)
+        self.settings = load_settings(self.filename)
+        return self.settings.rules[0]
+
+    def test_purchase_year_is_inferred_from_statement_including_old_imports(self):
+        rule = self.purchase_settings()
+        for posted, suffix, expected in [
+                ('2026-12-04', '01/12', '2026-12-01'),
+                ('2027-01-03', '31/12', '2026-12-31'),
+                ('2023-01-02', '30/12', '2022-12-30'),
+                ('2024-03-02', '29/02', '2024-02-29'),
+                ('2026-10-18', '18/10   ', '2026-10-18')]:
+            with self.subTest(posted=posted):
+                op = self.operation(day=posted)
+                op.label += ' ' + suffix
+                self.assertEqual(expense_day(rule, op).isoformat(), expected)
+
+    def test_purchase_date_drives_weekday_start_date_payload_and_duplicate_lookup(self):
+        self.purchase_settings('start_date = 2026-10-18\n')
+        op = self.operation(day='2026-10-20')  # Tuesday posting of Sunday's purchase
+        op.label += ' 18/10'
+        self.assertEqual(classify(self.settings, '123456', op)[0], 'auto')
+        with self.connection:
+            enqueue(self.connection, self.settings, '123456', op)
+        self.client.expenses.return_value = [self.remote()]
+        self.prompt.return_value = 'create'
+        self.run_sync()
+        self.client.expenses.assert_called_once_with('2026-10-18')
+        self.prompt.assert_called_once()
+        self.assertEqual(self.client.create.call_args[0][0]['date'], '2026-10-18T12:00:00Z')
+        self.settings.rules[0].start_date = dt.date(2026, 10, 19)
+        self.assertEqual(classify(self.settings, '123456', op)[0], 'skip')
+
+    def test_invalid_or_implausible_purchase_dates_never_fall_back(self):
+        rule = self.purchase_settings()
+        for suffix in ('', '31/02', '29/02', '25/10', '01/10', '18/13', '118/10', '18/10 texte'):
+            with self.subTest(suffix=suffix):
+                op = self.operation(day='2026-10-24')
+                op.label += ' ' + suffix
+                with self.assertRaisesRegex(ValueError, 'date d’achat'):
+                    expense_day(rule, op)
+
+    def test_purchase_delay_is_globally_six_days_and_inclusive(self):
+        rule = self.purchase_settings()
+        op = self.operation(day='2026-10-24')
+        op.label += ' 18/10'
+        self.assertEqual(expense_day(rule, op), dt.date(2026, 10, 18))
+        op.date += dt.timedelta(days=1)
+        with self.assertRaises(ValueError):
+            expense_day(rule, op)
+
+    def test_invalid_purchase_configuration_is_rejected(self):
+        for option in ('purchase_date_regex = (.*)', 'purchase_date_max_delay_days = 4',
+                       'purchase_date_regex = [',
+                       'purchase_date_regex = (?P<day>.*)(?P<month>.*)\npurchase_date_max_delay_days = -1'):
+            with self.subTest(option=option):
+                self.filename.write_text(CONFIG + option + '\n')
+                with self.assertRaises(ValueError):
+                    load_settings(self.filename)
+
+    def test_invalid_purchase_date_rolls_back_bank_import(self):
+        self.purchase_settings()
+        before = list(self.connection.iterdump())
+        with self.assertRaisesRegex(ValueError, 'date d’achat'):
+            self.import_history(self.history('1000', self.operation()))
+        self.assertEqual(list(self.connection.iterdump()), before)
+        self.client.create.assert_not_called()
 
     def test_first_matching_rule_wins_and_start_date_applies(self):
         self.filename.write_text(CONFIG.replace('min_amount = 4', 'start_date = 2026-10-25\nmin_amount = 4'))
