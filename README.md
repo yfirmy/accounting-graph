@@ -457,3 +457,80 @@ Les connexions HTTPS utilisent explicitement les certificats racines de `certifi
 (déjà inclus dans les dépendances), notamment pour les installations Python macOS
 dont le magasin de certificats par défaut n'est pas configuré. La validation du
 certificat et du nom du serveur reste activée.
+
+## Exceptions Splitwise : achats personnels dans une dépense de groupe
+
+Le fichier `conf/splitwise_exceptions.ini` permet de retirer une part personnelle
+ponctuelle sans changer les règles habituelles ni le montant bancaire. Il est
+référencé dans `conf/properties.ini` :
+
+```ini
+[Files]
+splitwise_exceptions = conf/splitwise_exceptions.ini
+```
+
+Exemple, si la règle porte le nom `[carrefour]` dans `splitwise_rules.ini` :
+
+```ini
+[courses_24_octobre]
+account = XXXXXXX3918
+rule = carrefour
+purchase_date = 2026-10-24
+personal_amount = 10
+```
+
+Aucun montant total ni regex supplémentaire n'est nécessaire. `account` est
+obligatoire : le numéro du compte avec un `X` (ou `x`) pour chaque chiffre masqué.
+Le masque doit avoir la même longueur que le numéro de compte. Seuls les comptes
+correspondants sont examinés pour cette exception. `rule` est le nom
+exact, sensible à la casse, de la section d'une règle active. `purchase_date`
+est le jour envoyé à Splitwise : date d'achat extraite du libellé si configurée,
+sinon date bancaire. `personal_amount` est un montant positif en euros (virgule
+ou point accepté). Le nom de l'exception doit rester stable. Une seule exception
+est autorisée pour un même compte, une même règle et une même date. Deux exceptions
+de même règle et date peuvent viser des comptes distincts ; des masques qui se
+chevauchent sont refusés.
+
+Préparer l'exception **avant l'import et l'envoi**. Elle peut aussi être ajoutée
+pour une dépense déjà en attente, avant de réimporter explicitement un OFX du
+compte concerné. Les règles d'éligibilité restent évaluées sur le montant bancaire
+original ; une déduction ne rend pas éligible une dépense exclue par les règles.
+
+Une correspondance unique reçoit automatiquement la déduction : une dépense de
+60 euros avec 10 euros personnels devient 50 euros dans Splitwise. Le montant
+bancaire reste à 60 euros, et les contrôles de solde restent inchangés. La recherche
+de doublons utilise les 50 euros réellement partagés. La note envoyée ne détaille
+pas les achats personnels.
+
+S'il existe plusieurs correspondances, l'application affiche les candidats et
+demande leur numéro. Entrée, `later` ou l'absence de terminal interactif conserve
+**tous les candidats en attente**, sans en envoyer un au montant complet par
+accident. Les imports de tous les comptes du fichier sont enregistrés avant cette
+sélection. Seules les autres bases `account_*.db` dont le numéro correspond au
+masque `account` sont ouvertes en lecture
+pour retrouver une application passée de l'exception ou une correspondance
+supplémentaire. Une dépense appartenant à un compte absent de l'import ne peut pas
+être modifiée : réimporter un relevé contenant ce compte pour la traiter.
+
+Une exception sans correspondance est signalée. Une part personnelle supérieure
+au total bloque l'envoi concerné, jusqu'à correction du fichier. Si elle égale le
+total, la dépense n'est pas envoyée. Une dépense déjà envoyée, rattachée ou dont
+l'envoi précédent est incertain n'est jamais corrigée automatiquement ; vérifier
+son état dans Splitwise avant de poursuivre.
+
+La table `SPLITWISE_ADJUSTMENTS` conserve le nom de l'exception, la transaction,
+la règle, la date, le montant initial et la déduction. Sa création bénéficie de
+la sauvegarde automatique avant migration. La déduction et la mise à jour du
+montant prévu pour l'API sont enregistrées dans une même transaction SQLite :
+une reprise ne soustrait jamais une seconde fois la part personnelle.
+
+Après application, l'exception peut rester dans le fichier ou être supprimée.
+Ne pas la renommer ni changer ses valeurs : une définition différente d'une
+exception déjà appliquée interrompt les envois pour éviter une double déduction.
+Même en l'absence de clé API, la déduction peut être enregistrée localement et
+l'envoi reste en attente avec le bon montant.
+
+Sans `--import`, aucune exception n'est appliquée. Avec `--dry-run`, le fichier
+est validé, mais aucune déduction persistante ni sélection interactive n'a lieu.
+Un fichier configuré mais absent, une règle inconnue, une date ou un montant
+invalide interrompt le traitement avant les imports.

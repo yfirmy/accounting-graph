@@ -29,9 +29,11 @@ def backup_before_upgrade(connection, dry_run=False):
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'TRANSACTION_ALERTS'").fetchone()
     exports = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'SPLITWISE_EXPORTS'").fetchone()
+    adjustments = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'SPLITWISE_ADJUSTMENTS'").fetchone()
     if (columns.get('ID', '').upper() != 'INTEGER'
             and {'POSTED_AT', 'AMOUNT_CENTS', 'MATCHED_RULES'} <= columns.keys()
-            and observations and alerts and exports):
+            and observations and alerts and exports and adjustments):
         return None
     filename = next(row[2] for row in connection.execute('PRAGMA database_list') if row[1] == 'main')
     if not filename:
@@ -126,6 +128,13 @@ def _prepare_schema(connection):
             ('pending', 'sending', 'uncertain', 'submitted', 'linked', 'skipped')),
         MARKER TEXT NOT NULL UNIQUE, PAYLOAD TEXT, EXPENSE_ID TEXT,
         UPDATED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
+    connection.execute('''CREATE TABLE IF NOT EXISTS SPLITWISE_ADJUSTMENTS (
+        EXCEPTION_ID TEXT PRIMARY KEY NOT NULL, TRANSACTION_ID TEXT NOT NULL UNIQUE,
+        RULE_ID TEXT NOT NULL, PURCHASE_DATE TEXT NOT NULL,
+        PERSONAL_CENTS INTEGER NOT NULL CHECK (PERSONAL_CENTS > 0),
+        ORIGINAL_CENTS INTEGER NOT NULL CHECK (ORIGINAL_CENTS >= PERSONAL_CENTS),
+        APPLIED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (RULE_ID, PURCHASE_DATE))''')
     # Restore triggers only after backfilling the new columns, so migration
     # does not fire application-specific update triggers on historical rows.
     for (sql,) in objects:

@@ -22,7 +22,8 @@ from ofxparse import OfxParser
 from balance_checks import cents, latest_observation, reconcile_import, verify_stored_balance
 from legitimacy_checks import load_rules, refresh_alerts, export_alerts
 from ofx_input import collect_latest_ofx, print_file_dates
-from splitwise_sync import load_settings as load_splitwise_settings, enqueue, sync_pending
+from splitwise_sync import load_settings as load_splitwise_settings, enqueue, sync_pending, sync_pending_many
+from splitwise_exceptions import load_exceptions
 
 MONTHS_IN_YEAR = 12
 DAYS_IN_MONTH = 31
@@ -397,19 +398,27 @@ def parse_file(filename: str, csv_output_mode: bool):
 def process_statements(new_account_statements: [AccountStatement], dry_run_mode: bool, debug_mode: bool):
     rules = load_rules(config.get('Files', 'legitimacy_rules', fallback='legitimacy_rules.ini'))
     splitwise = load_splitwise_settings(config.get('Files', 'splitwise_rules', fallback=None))
+    if splitwise is not None:
+        splitwise.exceptions = load_exceptions(
+            config.get('Files', 'splitwise_exceptions', fallback=None), splitwise.rules)
     output_directory = config.get('Directories', 'output') if not dry_run_mode else None
     if not dry_run_mode and not output_directory.strip():
         raise ValueError('Missing output directory for transaction alerts')
     reporting_by_account = {}
+    connections = {}
     for new_account_statement in new_account_statements:
-        with open_database_connection(new_account_statement.account_id) as connection:
+        account_id = new_account_statement.account_id
+        if account_id not in connections:
+            connections[account_id] = open_database_connection(account_id)
+        with connections[account_id] as connection:
             alerts = prepare_and_analyse_history(
                 new_account_statement, connection, dry_run_mode, debug_mode, rules=rules,
-                splitwise=splitwise)
+                splitwise=splitwise, defer_splitwise=True)
             account_label = '{} ({})'.format(get_account_name(new_account_statement.account_id),
                                             get_masked_account_id(new_account_statement.account_id))
             reporting_by_account[new_account_statement.account_id] = [(account_label,) + row for row in alerts]
     if not dry_run_mode:
+        sync_pending_many(list(connections.values()), splitwise)
         reporting = [row for rows in reporting_by_account.values() for row in rows]
         report_path = export_alerts(reporting, output_directory)
         print('Transaction alerts: {} — {}'.format(len(reporting), report_path))
@@ -428,7 +437,7 @@ def print_transaction_alerts(account_id, alerts):
         print("\n")
 
 
-def prepare_and_analyse_history(new_statements: AccountStatement, connection, dry_run_mode: bool, debug_mode: bool, rules=None, splitwise=None):
+def prepare_and_analyse_history(new_statements: AccountStatement, connection, dry_run_mode: bool, debug_mode: bool, rules=None, splitwise=None, defer_splitwise=False):
     if splitwise is not None and getattr(new_statements, 'currency', 'EUR') != 'EUR':
         raise ValueError('Splitwise : cette intégration exige un relevé en EUR (CURDEF).')
     alerts = []
@@ -451,7 +460,8 @@ def prepare_and_analyse_history(new_statements: AccountStatement, connection, dr
         print_transaction_alerts(new_statements.account_id, alerts)
     if dry_run_mode:
         return alerts
-    sync_pending(connection, splitwise)
+    if not defer_splitwise:
+        sync_pending(connection, splitwise)
     draw_stored_history(new_statements.account_id, connection, debug_mode)
     return alerts
 

@@ -184,6 +184,24 @@ class SchemaMigrationTests(unittest.TestCase):
         self.assertEqual(self.connection.execute('SELECT * FROM TRANSACTIONS').fetchall(), transactions)
         self.assertEqual(self.connection.execute('SELECT * FROM SPLITWISE_EXPORTS').fetchall(), [])
 
+    def test_adding_personal_adjustments_is_backed_up_and_preserves_history(self):
+        self.migrate()
+        self.connection.execute('DROP TABLE SPLITWISE_ADJUSTMENTS')
+        self.connection.commit()
+        before = list(self.connection.iterdump())
+        banks = self.connection.execute('SELECT * FROM TRANSACTIONS').fetchall()
+        backups = set(self.path.parent.glob('backups/*.db'))
+        self.migrate(dry_run=True)
+        self.assertEqual(list(self.connection.iterdump()), before)
+        self.assertEqual(set(self.path.parent.glob('backups/*.db')), backups)
+        self.migrate()
+        added = set(self.path.parent.glob('backups/*.db')) - backups
+        self.assertEqual(len(added), 1)
+        with contextlib.closing(sqlite3.connect(str(added.pop()))) as backup:
+            self.assertEqual(list(backup.iterdump()), before)
+        self.assertEqual(self.connection.execute('SELECT * FROM TRANSACTIONS').fetchall(), banks)
+        self.assertEqual(self.connection.execute('SELECT * FROM SPLITWISE_ADJUSTMENTS').fetchall(), [])
+
 
 
 if __name__ == '__main__':

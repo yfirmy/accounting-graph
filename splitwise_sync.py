@@ -1,6 +1,7 @@
 """Opt-in Splitwise rules and durable delivery of newly imported expenses."""
 import configparser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from contextlib import ExitStack, closing
 import datetime as dt
 from http.client import HTTPException
 import json
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import ssl
+import sqlite3
 import sys
 import uuid
 from urllib import request, parse, error
@@ -15,6 +17,7 @@ from urllib import request, parse, error
 from filelock import FileLock, Timeout
 import certifi
 from money import cents
+from splitwise_exceptions import apply_exceptions, matches_account
 
 
 IMPORT_NOTE = 'Dépense ajoutée automatiquement à partir du relevé de compte.'
@@ -46,6 +49,7 @@ class Rule:
 class Settings:
     token_env: str
     rules: list
+    exceptions: list = field(default_factory=list)
 
 
 def load_settings(filename):
@@ -314,11 +318,13 @@ def _state(connection, identifier, state, expense_id=None):
             UPDATED_AT = CURRENT_TIMESTAMP WHERE TRANSACTION_ID = ?''', (state, expense_id, identifier))
 
 
-def _deliver(connection, client, prompt):
+def _deliver(connection, client, prompt, blocked=()):
     rows = connection.execute('''SELECT TRANSACTION_ID, CATEGORY, STATE, MARKER, PAYLOAD
         FROM SPLITWISE_EXPORTS WHERE STATE IN ('pending', 'sending', 'uncertain')
         ORDER BY rowid''').fetchall()
     for identifier, category, state, marker, serialized in rows:
+        if identifier in blocked:
+            continue
         payload = json.loads(serialized)
         # Also annotate expenses queued before this note was introduced.
         payload['details'] = expense_note(marker)
@@ -388,26 +394,42 @@ def _deliver(connection, client, prompt):
 
 
 def sync_pending(connection, settings, client=None, prompt=ask):
+    return sync_pending_many([connection], settings, client=client, prompt=prompt)
+
+
+def sync_pending_many(connections, settings, client=None, prompt=ask):
     if settings is None:
         return
-    if connection.in_transaction:
+    if any(connection.in_transaction for connection in connections):
         raise ValueError('Splitwise exige un import validé et enregistré avant tout envoi')
-    if not connection.execute("SELECT 1 FROM SPLITWISE_EXPORTS WHERE STATE IN ('pending', 'sending', 'uncertain') LIMIT 1").fetchone():
-        return
-    if client is None:
-        token = os.environ.get(settings.token_env)
-        if not token:
-            print('Splitwise : variable {} absente ; envois conservés en attente.'.format(settings.token_env))
-            return
-        client = Client(token)
-    filename = next(row[2] for row in connection.execute('PRAGMA database_list') if row[1] == 'main')
-    if not filename:
-        # Used by in-memory tests; real account databases are always on disk.
-        _deliver(connection, client, prompt)
-        return
-    lock = FileLock(str(Path(filename).parent / '.splitwise-sync.lock'), timeout=0)
+    filenames = {Path(row[2]).resolve() for connection in connections
+                 for row in connection.execute('PRAGMA database_list') if row[1] == 'main' and row[2]}
+    directories = {path.parent for path in filenames}
     try:
-        with lock:
-            _deliver(connection, client, prompt)
+        with ExitStack() as stack:
+            for directory in sorted(directories):
+                stack.enter_context(FileLock(str(directory / '.splitwise-sync.lock'), timeout=0))
+            lookup = list(connections)
+            if settings.exceptions:
+                # Filter filenames by account mask before opening other databases.
+                for directory in sorted(directories):
+                    for path in sorted(directory.glob('account_*.db')):
+                        if (any(matches_account(item.account, path.stem[len('account_'):])
+                                for item in settings.exceptions)
+                                and path.resolve() not in filenames and path.is_file()):
+                            lookup.append(stack.enter_context(closing(sqlite3.connect(
+                                path.resolve().as_uri() + '?mode=ro', uri=True))))
+            blocked = apply_exceptions(lookup, connections, settings.exceptions, prompt)
+            if not any(connection.execute("SELECT 1 FROM SPLITWISE_EXPORTS WHERE STATE IN ('pending', 'sending', 'uncertain') LIMIT 1").fetchone()
+                       for connection in connections):
+                return
+            if client is None:
+                token = os.environ.get(settings.token_env)
+                if not token:
+                    print('Splitwise : variable {} absente ; envois conservés en attente.'.format(settings.token_env))
+                    return
+                client = Client(token)
+            for connection in connections:
+                _deliver(connection, client, prompt, blocked[connection])
     except Timeout:
         print('Splitwise : un autre envoi est en cours ; reprise au prochain import.')
