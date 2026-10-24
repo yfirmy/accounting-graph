@@ -331,10 +331,18 @@ Pour les paiements par carte dont le libellé se termine par une date `JJ/MM`,
 ajouter dans chaque règle concernée :
 
 ```ini
-purchase_date_regex = (?<!\d)(?P<day>[0-9]{2})/(?P<month>[0-9]{2})\s*$
+purchase_date_taken = end_of_label
 ```
 
-La regex doit contenir les groupes nommés `day` et `month`. L'année est déduite
+Une regex commune au programme extrait le `JJ/MM` final, avec des espaces finaux
+éventuels. Aucune regex n'est à fournir dans les règles. Sans cette option, ou avec
+`purchase_date_taken = posting_date`, la date de comptabilisation `DTPOSTED` est
+utilisée, même si le libellé contient une autre date. Le terme `posting_date` est
+préféré à `value_date`, qui désigne une date de valeur distincte. Les seules valeurs
+acceptées sont `posting_date` et `end_of_label`. L'ancien paramètre
+`purchase_date_regex` est remplacé par `purchase_date_taken = end_of_label`.
+
+L'année est déduite
 de la date bancaire de la transaction, jamais de la date d'exécution : un achat
 `31/12` comptabilisé le 3 janvier 2027 devient le 31 décembre 2026. Cela fonctionne
 aussi pour les relevés anciens et les années bissextiles. La date d'achat ne peut

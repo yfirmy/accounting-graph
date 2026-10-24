@@ -22,6 +22,7 @@ from splitwise_exceptions import apply_exceptions, matches_account
 
 IMPORT_NOTE = 'Dépense ajoutée automatiquement à partir du relevé de compte.'
 PURCHASE_DATE_MAX_DELAY_DAYS = 6
+PURCHASE_DATE_AT_END = re.compile(r'(?<!\d)(?P<day>[0-9]{2})/(?P<month>[0-9]{2})\s*$')
 
 
 def expense_note(marker):
@@ -42,7 +43,7 @@ class Rule:
     group_id: int
     start_date: object
     category_id: object = None
-    purchase_date_regex: object = None
+    purchase_date_taken: str = 'posting_date'
 
 
 @dataclass
@@ -76,7 +77,7 @@ def load_settings(filename):
         try:
             allowed = {'account', 'label_regex', 'weekdays', 'min_amount', 'max_amount',
                        'action', 'outside_amount', 'description', 'group_id', 'start_date', 'enabled',
-                       'category_id', 'purchase_date_regex'}
+                       'category_id', 'purchase_date_taken'}
             if set(s) - allowed:
                 raise ValueError('option inconnue')
             if not s.getboolean('enabled', fallback=True):
@@ -109,14 +110,12 @@ def load_settings(filename):
             category_id = s.getint('category_id') if 'category_id' in s else None
             if category_id is not None and category_id <= 0:
                 raise ValueError('category_id doit être un identifiant de sous-catégorie positif')
-            purchase_regex = None
-            if 'purchase_date_regex' in s:
-                purchase_regex = re.compile(s['purchase_date_regex'])
-                if not {'day', 'month'} <= purchase_regex.groupindex.keys():
-                    raise ValueError('purchase_date_regex exige les groupes nommés day et month')
+            purchase_date_taken = s.get('purchase_date_taken', 'posting_date').strip()
+            if purchase_date_taken not in {'posting_date', 'end_of_label'}:
+                raise ValueError('purchase_date_taken doit valoir posting_date ou end_of_label')
             rules.append(Rule(name, account, label, weekdays, minimum, maximum,
                               action, outside, description, group_id, start, category_id,
-                              purchase_regex))
+                              purchase_date_taken))
         except (KeyError, ValueError, re.error) as exc:
             raise ValueError('Règle Splitwise [{}] : {}'.format(name, exc)) from exc
     return Settings(token_env, rules)
@@ -125,9 +124,9 @@ def load_settings(filename):
 def expense_day(rule, operation):
     """Resolve a purchase date relative to its posting date, never today's date."""
     posted = operation.date.date()
-    if rule is None or rule.purchase_date_regex is None:
+    if rule is None or rule.purchase_date_taken == 'posting_date':
         return posted
-    match = rule.purchase_date_regex.search(operation.label or '')
+    match = PURCHASE_DATE_AT_END.search(operation.label or '')
     if match:
         try:
             day, month = int(match.group('day')), int(match.group('month'))
@@ -141,8 +140,8 @@ def expense_day(rule, operation):
             if 0 <= (posted - purchase).days <= PURCHASE_DATE_MAX_DELAY_DAYS:
                 return purchase
     raise ValueError('Splitwise [{}], transaction {} : date d’achat absente, invalide ou hors '
-                     'du délai global de {} jours précédant le {}. Vérifier purchase_date_regex '
-                     'et la date dans le libellé.'.format(
+                     'du délai global de {} jours précédant le {}. Vérifier purchase_date_taken '
+                     'et la date JJ/MM en fin de libellé.'.format(
                          rule.name, operation.id, PURCHASE_DATE_MAX_DELAY_DAYS, posted))
 
 

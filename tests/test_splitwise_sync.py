@@ -82,7 +82,7 @@ class SplitwiseTests(unittest.TestCase):
         self.assertEqual(classify(self.settings, '654321', self.operation())[0], 'skip')
 
     def purchase_settings(self, extra=''):
-        self.filename.write_text(CONFIG + r'purchase_date_regex = (?<!\d)(?P<day>[0-9]{2})/(?P<month>[0-9]{2})\s*$' + '\n' + extra)
+        self.filename.write_text(CONFIG + 'purchase_date_taken = end_of_label\n' + extra)
         self.settings = load_settings(self.filename)
         return self.settings.rules[0]
 
@@ -135,12 +135,21 @@ class SplitwiseTests(unittest.TestCase):
 
     def test_invalid_purchase_configuration_is_rejected(self):
         for option in ('purchase_date_regex = (.*)', 'purchase_date_max_delay_days = 4',
-                       'purchase_date_regex = [',
-                       'purchase_date_regex = (?P<day>.*)(?P<month>.*)\npurchase_date_max_delay_days = -1'):
+                       'purchase_date_taken = unknown', 'purchase_date_taken ='):
             with self.subTest(option=option):
                 self.filename.write_text(CONFIG + option + '\n')
                 with self.assertRaises(ValueError):
                     load_settings(self.filename)
+
+    def test_posting_date_is_default_and_ignores_label_date(self):
+        op = self.operation(day='2026-10-20')
+        op.label += ' 18/10'
+        self.assertEqual(expense_day(self.settings.rules[0], op), dt.date(2026, 10, 20))
+        self.filename.write_text(CONFIG + 'purchase_date_taken = posting_date\n')
+        rule = load_settings(self.filename).rules[0]
+        self.assertEqual(expense_day(rule, op), dt.date(2026, 10, 20))
+        op.label = 'Boulangerie 31/02'
+        self.assertEqual(expense_day(rule, op), dt.date(2026, 10, 20))
 
     def test_invalid_purchase_date_rolls_back_bank_import(self):
         self.purchase_settings()
