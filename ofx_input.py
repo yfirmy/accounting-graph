@@ -1,9 +1,36 @@
 """Locate and archive the newest downloaded OFX without replacing existing files."""
 import datetime
+import io
 import os
 from pathlib import Path
 import re
 import shutil
+
+from ofxparse import OfxParser
+
+
+def read_ofx(path):
+    """Parse original bytes, correcting UTF-8 mislabeled as a legacy charset.
+
+    Some bank exports declare USASCII/1252 despite containing UTF-8. Only
+    override that declaration when the entire file is strictly valid UTF-8
+    and contains non-ASCII bytes. Keep the archived file unchanged.
+    """
+    data = Path(path).read_bytes()
+    try:
+        data.decode('utf-8-sig', errors='strict')
+    except UnicodeDecodeError:
+        pass  # Let ofxparse decode the declared legacy charset strictly.
+    else:
+        header, separator, body = data.partition(b'<')
+        if separator and any(byte >= 128 for byte in data):
+            if header.startswith(b'\xef\xbb\xbf'):
+                header = header[3:]
+            if re.search(br'(?mi)^ENCODING:[^\r\n]*', header):
+                header = re.sub(br'(?mi)^ENCODING:[^\r\n]*', b'ENCODING:UTF-8', header)
+                data = header + separator + body
+    with io.BytesIO(data) as stream:
+        return OfxParser.parse(stream)
 
 
 def print_file_dates(path):

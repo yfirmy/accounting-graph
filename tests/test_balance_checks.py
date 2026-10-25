@@ -195,7 +195,7 @@ class ReconciliationTests(unittest.TestCase):
         bank_statement = SimpleNamespace(balance_date=dt.datetime(2026, 10, 12, 18),
             end_date=dt.datetime(2026, 10, 10), balance=Decimal('1000'), transactions=[], discarded_entries=[])
         ofx = SimpleNamespace(accounts=[SimpleNamespace(account_id='123456', statement=bank_statement)])
-        with patch('builtins.open', unittest.mock.mock_open()), patch.object(app.OfxParser, 'parse', return_value=ofx), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(app, 'read_ofx', return_value=ofx), contextlib.redirect_stdout(io.StringIO()):
             result = app.parse_ofx('test.ofx', False)[0]
             self.assertEqual(result.balance_date, bank_statement.balance_date)
             bank_statement.balance_date = None

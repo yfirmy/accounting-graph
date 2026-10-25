@@ -82,6 +82,16 @@ l'original reste disponible. En cas d'échec ultérieur de l'analyse, l'OFX rest
 archivé : utiliser la commande avec son chemin explicite pour relancer l'import.
 `--dry-run` ne crée pas le répertoire `input` et ne déplace aucun fichier.
 
+## Vérification de l’encodage OFX à chaque import
+
+Certains exports déclarent `ENCODING:USASCII` / `CHARSET:1252` alors que leurs
+octets sont en UTF-8. L'import vérifie strictement le fichier entier : si ses
+octets non ASCII sont valides en UTF-8, il corrige l'en-tête OFX en mémoire avant
+le parsing. Sinon, le parseur utilise l'encodage déclaré. Les fichiers archivés
+ne sont pas modifiés. Une déclaration Windows-1252 peut exceptionnellement être
+ambiguë si ses octets forment aussi du UTF-8 valide ; la priorité à UTF-8 répond
+au comportement constaté des exports bancaires utilisés ici.
+
 ## Balance verification
 
 The ledger balance and its exact OFX date (`LEDGERBAL/DTASOF`) are recorded in

@@ -18,10 +18,9 @@ import calendar
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
-from ofxparse import OfxParser
 from balance_checks import cents, latest_observation, reconcile_import, verify_stored_balance
 from legitimacy_checks import load_rules, refresh_alerts, export_alerts
-from ofx_input import collect_latest_ofx, print_file_dates
+from ofx_input import collect_latest_ofx, print_file_dates, read_ofx
 from splitwise_sync import load_settings as load_splitwise_settings, enqueue, sync_pending, sync_pending_many
 from splitwise_exceptions import load_exceptions
 
@@ -529,36 +528,35 @@ def main(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: b
 
 def parse_ofx(filename: str, csv_output_mode: bool):
     parsed_account_statements = []
-    with open(filename, 'r', encoding="cp1252") as ofxFile:
-        ofx = OfxParser.parse(ofxFile)
-        for account in ofx.accounts:
-            account_statement = AccountStatement(account.account_id)
-            statement = account.statement
-            account_statement.currency = getattr(statement, 'currency', '').upper()
-            print("\n" + '\033[34m' + "Account " + account.account_id + " \"" + get_account_name(account.account_id) + " ->| " + str(statement.end_date) +
-                  "\": " + '\033[0m')
-            if getattr(statement, 'discarded_entries', []):
-                raise ValueError("OFX contains discarded transactions; import cancelled")
-            account_statement.balance_date = getattr(statement, 'balance_date', None)
-            if account_statement.balance_date is None:
-                raise ValueError("OFX is missing the ledger balance date (LEDGERBAL/DTASOF)")
-            account_statement.last_date = account_statement.balance_date.replace(
-                hour=0, minute=0, second=0, microsecond=0)
-            account_statement.last_balance = statement.balance
-            print('\033[94m' + "Balance on " + account_statement.last_date.strftime("%d/%m/%Y") + ": "
-                  + str(account_statement.last_balance) + " " + CURRENCY + '\033[0m')
-            if len(statement.transactions) == 0:
-                print("WARNING: No transaction in this file for account " + str(account.account_id) +
-                      " - " + get_account_name(account.account_id))
-            else:
-                for transaction in statement.transactions:
-                    operation = Operation(transaction.id,
-                                          transaction.date,
-                                          transaction.memo,
-                                          transaction.amount)
-                    print(operation.debug(csv_output_mode))
-                    account_statement.add(operation)
-            parsed_account_statements.append(account_statement)
+    ofx = read_ofx(filename)
+    for account in ofx.accounts:
+        account_statement = AccountStatement(account.account_id)
+        statement = account.statement
+        account_statement.currency = getattr(statement, 'currency', '').upper()
+        print("\n" + '\033[34m' + "Account " + account.account_id + " \"" + get_account_name(account.account_id) + " ->| " + str(statement.end_date) +
+              "\": " + '\033[0m')
+        if getattr(statement, 'discarded_entries', []):
+            raise ValueError("OFX contains discarded transactions; import cancelled")
+        account_statement.balance_date = getattr(statement, 'balance_date', None)
+        if account_statement.balance_date is None:
+            raise ValueError("OFX is missing the ledger balance date (LEDGERBAL/DTASOF)")
+        account_statement.last_date = account_statement.balance_date.replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        account_statement.last_balance = statement.balance
+        print('\033[94m' + "Balance on " + account_statement.last_date.strftime("%d/%m/%Y") + ": "
+              + str(account_statement.last_balance) + " " + CURRENCY + '\033[0m')
+        if len(statement.transactions) == 0:
+            print("WARNING: No transaction in this file for account " + str(account.account_id) +
+                  " - " + get_account_name(account.account_id))
+        else:
+            for transaction in statement.transactions:
+                operation = Operation(transaction.id,
+                                      transaction.date,
+                                      transaction.memo,
+                                      transaction.amount)
+                print(operation.debug(csv_output_mode))
+                account_statement.add(operation)
+        parsed_account_statements.append(account_statement)
 
     print()
     return parsed_account_statements
