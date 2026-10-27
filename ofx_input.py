@@ -98,7 +98,7 @@ def collect_latest_ofx(config, dry_run=False):
     print_file_dates(source)
     destination = archive / source.name
     # lexists also protects a dangling symlink or a directory with this name.
-    if os.path.lexists(destination):
+    if os.path.lexists(destination) or os.path.lexists(str(destination) + '.gpg'):
         print('Arrêt : le fichier était déjà intégré dans le répertoire de stockage : ' + str(destination))
         return None
     if dry_run:
