@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 from balance_checks import cents, latest_observation, reconcile_import, verify_stored_balance
 from legitimacy_checks import load_rules, refresh_alerts, export_alerts
 from ofx_input import collect_latest_ofx, print_file_dates, read_ofx
+from ofx_encryption import encryption_settings, encrypt_ofx
 from splitwise_sync import load_settings as load_splitwise_settings, enqueue, sync_pending, sync_pending_many
 from splitwise_exceptions import load_exceptions
 
@@ -562,7 +563,10 @@ def parse_ofx(filename: str, csv_output_mode: bool):
     return parsed_account_statements
 
 def process_import(filename: str, dry_run_mode: bool, debug_mode: bool, csv_output_mode: bool):
+    encryption = encryption_settings(config)
     main(filename, dry_run_mode, debug_mode, csv_output_mode)
+    if encryption is not None and not dry_run_mode:
+        print('Fichier OFX chiffré : ' + str(encrypt_ofx(filename, encryption)))
     print()
 
 
@@ -581,6 +585,7 @@ def cli(argv=None):
         if filename is None:
             replay_analysis(args.dry_run, args.debug)
             return 0
+        encryption_settings(config)  # Validate before moving automatic downloads.
         if filename:
             filename = os.path.expanduser(filename)
             print_file_dates(filename)

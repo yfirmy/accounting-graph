@@ -82,6 +82,42 @@ l'original reste disponible. En cas d'échec ultérieur de l'analyse, l'OFX rest
 archivé : utiliser la commande avec son chemin explicite pour relancer l'import.
 `--dry-run` ne crée pas le répertoire `input` et ne déplace aucun fichier.
 
+## Chiffrement GPG des fichiers OFX après import
+
+Installer GnuPG, importer la clé publique et afficher son ID court :
+
+```sh
+gpg --import /chemin/vers/cle-publique.asc
+gpg --list-keys --keyid-format SHORT
+```
+
+Copier les 8 caractères hexadécimaux après `/` sur la ligne `pub` dans
+`[Encryption] recipient_key_id` de `conf/properties.ini`, sans préfixe `0x`.
+Utiliser la section de `examples/encryption.ini` et passer `enabled` à `true`.
+Aucun nom ni e-mail n'est requis. Vérifier la clé choisie : les ID courts peuvent
+présenter des collisions. GPG sélectionne sa sous-clé de chiffrement.
+
+Après un import réussi, `releve.ofx.gpg` est créé à côté de l'OFX original.
+Avec `remove_plaintext = true` (par défaut), l'original est ensuite supprimé.
+Une archive existante n'est jamais écrasée ; l'import automatique détecte aussi
+les fichiers déjà archivés en `.ofx.gpg`.
+
+En cas d'échec, le fichier en clair est conservé ; les transactions déjà validées
+restent en base. Pour reprendre, importer explicitement son chemin, éventuellement
+dans `input` après un déplacement automatique. `--dry-run` ne chiffre ni ne
+supprime rien. Le chiffrement est désactivé si la section est absente ou si
+`enabled = false`, et ne s'applique qu'aux imports.
+
+La clé privée est nécessaire pour déchiffrer une archive avant réimport :
+
+```sh
+gpg --output /repertoire/protege/reprise.ofx --decrypt /archives/releve.ofx.gpg
+python3 accounts-analysis.py --import /repertoire/protege/reprise.ofx
+```
+
+Seuls les fichiers OFX sont chiffrés, pas les bases SQLite ni les rapports.
+La suppression de l'original n'est pas un effacement sécurisé du disque.
+
 ## Vérification de l’encodage OFX à chaque import
 
 Certains exports déclarent `ENCODING:USASCII` / `CHARSET:1252` alors que leurs
