@@ -1,4 +1,4 @@
-"""One-off personal deductions, applied atomically to the Splitwise outbox only."""
+"""One-off personal deductions and meal-voucher additions, applied atomically to the Splitwise outbox only."""
 import configparser
 from dataclasses import dataclass
 import datetime as dt
@@ -16,6 +16,7 @@ class PersonalException:
     purchase_date: str
     personal_cents: int
     account: str
+    meal_voucher_cents: int = 0
 
 
 def matches_account(mask, account):
@@ -43,8 +44,10 @@ def load_exceptions(filename, rules):
     for name in config.sections():
         try:
             section = config[name]
-            if set(section) != {'account', 'rule', 'purchase_date', 'personal_amount'}:
-                raise ValueError('indiquer uniquement account, rule, purchase_date et personal_amount')
+            required = {'account', 'rule', 'purchase_date'}
+            amounts = {'personal_amount', 'meal_voucher_amount'}
+            if not required <= set(section) or set(section) - required - amounts or not amounts & set(section):
+                raise ValueError('indiquer account, rule, purchase_date et personal_amount et/ou meal_voucher_amount')
             account = section['account'].strip().upper()
             if not re.fullmatch('[0-9X]+', account):
                 raise ValueError('account doit contenir des chiffres ou X (un X par chiffre masqué)')
@@ -52,13 +55,15 @@ def load_exceptions(filename, rules):
             if rule not in known:
                 raise ValueError('règle Splitwise inconnue ou désactivée : ' + rule)
             day = dt.date.fromisoformat(section['purchase_date']).isoformat()
-            amount = cents(section['personal_amount'].replace(',', '.'))
-            if amount <= 0:
-                raise ValueError('personal_amount doit être strictement positif')
+            values = {}
+            for field in ('personal_amount', 'meal_voucher_amount'):
+                values[field] = cents(section[field].replace(',', '.')) if field in section else 0
+                if field in section and values[field] <= 0:
+                    raise ValueError(field + ' doit être strictement positif')
             if any(r == rule and d == day and masks_overlap(a, account) for r, d, a in seen):
                 raise ValueError('une seule exception est autorisée par compte, règle et date')
             seen.append((rule, day, account))
-            result.append(PersonalException(name, rule, day, amount, account))
+            result.append(PersonalException(name, rule, day, values['personal_amount'], account, values['meal_voucher_amount']))
         except (KeyError, ValueError) as exc:
             raise ValueError('Exception Splitwise [{}] : {}'.format(name, exc)) from exc
     return result
@@ -82,8 +87,10 @@ def apply_exceptions(connections, writable, exceptions, prompt):
                 continue
             tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if 'SPLITWISE_ADJUSTMENTS' in tables:
-                applied.extend(connection.execute('''SELECT EXCEPTION_ID, RULE_ID, PURCHASE_DATE, PERSONAL_CENTS
-                    FROM SPLITWISE_ADJUSTMENTS WHERE EXCEPTION_ID = ? OR (RULE_ID = ? AND PURCHASE_DATE = ?)''',
+                columns = {row[1] for row in connection.execute('PRAGMA table_info(SPLITWISE_ADJUSTMENTS)')}
+                voucher_column = 'MEAL_VOUCHER_CENTS' if 'MEAL_VOUCHER_CENTS' in columns else '0'
+                applied.extend(connection.execute('''SELECT EXCEPTION_ID, RULE_ID, PURCHASE_DATE, PERSONAL_CENTS, {}
+                    FROM SPLITWISE_ADJUSTMENTS WHERE EXCEPTION_ID = ? OR (RULE_ID = ? AND PURCHASE_DATE = ?)'''.format(voucher_column),
                     (item.name, item.rule, item.purchase_date)).fetchall())
             if 'SPLITWISE_EXPORTS' not in tables:
                 continue
@@ -93,7 +100,7 @@ def apply_exceptions(connections, writable, exceptions, prompt):
                 if payload['date'][:10] == item.purchase_date:
                     candidates.append((connection, identifier, state, payload))
         if applied:
-            expected = (item.name, item.rule, item.purchase_date, item.personal_cents)
+            expected = (item.name, item.rule, item.purchase_date, item.personal_cents, item.meal_voucher_cents)
             if len(applied) != 1 or applied[0] != expected:
                 raise ValueError('Exception [{}] déjà appliquée avec une autre définition ; '
                                  'aucun recalcul ni nouvel envoi automatique.'.format(item.name))
@@ -110,8 +117,8 @@ def apply_exceptions(connections, writable, exceptions, prompt):
                 blocked[connection].add(identifier)
         selected = candidates[0]
         if len(candidates) > 1:
-            lines = ['Exception [{}] — part personnelle {} EUR : choisir UNE dépense.'.format(
-                item.name, euros(item.personal_cents))]
+            lines = ['Exception [{}] — tickets restaurant +{} EUR, part personnelle -{} EUR : choisir UNE dépense.'.format(
+                item.name, euros(item.meal_voucher_cents), euros(item.personal_cents))]
             for i, (candidate_connection, identifier, state, payload) in enumerate(candidates, 1):
                 filename = next(r[2] for r in candidate_connection.execute('PRAGMA database_list') if r[1] == 'main')
                 account = ('…' + Path(filename).stem[-3:]) if filename else 'local'
@@ -131,11 +138,12 @@ def apply_exceptions(connections, writable, exceptions, prompt):
                   'Vérifier la dépense dans Splitwise avant toute correction.'.format(item.name, state))
             continue
         original = cents(payload['cost'])
-        if item.personal_cents > original:
+        total = original + item.meal_voucher_cents
+        if item.personal_cents > total:
             print('Splitwise : exception [{}] bloquée : part personnelle {} EUR supérieure au total {} EUR.'.format(
-                item.name, euros(item.personal_cents), euros(original)))
+                item.name, euros(item.personal_cents), euros(total)))
             continue
-        remaining = original - item.personal_cents
+        remaining = total - item.personal_cents
         adjusted = dict(payload, cost=euros(remaining))
         with connection:
             connection.execute('BEGIN IMMEDIATE')
@@ -151,11 +159,11 @@ def apply_exceptions(connections, writable, exceptions, prompt):
             if updated.rowcount != 1:
                 raise ValueError('La dépense a changé pendant le traitement de son exception ; relancer l’import.')
             connection.execute('''INSERT INTO SPLITWISE_ADJUSTMENTS
-                (EXCEPTION_ID, TRANSACTION_ID, RULE_ID, PURCHASE_DATE, PERSONAL_CENTS, ORIGINAL_CENTS)
-                VALUES (?, ?, ?, ?, ?, ?)''',
-                (item.name, identifier, item.rule, item.purchase_date, item.personal_cents, original))
-        print('Splitwise : exception [{}] appliquée : {} EUR - {} EUR personnels = {} EUR à partager{}.'.format(
-            item.name, euros(original), euros(item.personal_cents), euros(remaining),
+                (EXCEPTION_ID, TRANSACTION_ID, RULE_ID, PURCHASE_DATE, PERSONAL_CENTS, ORIGINAL_CENTS, MEAL_VOUCHER_CENTS)
+                VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                (item.name, identifier, item.rule, item.purchase_date, item.personal_cents, original, item.meal_voucher_cents))
+        print('Splitwise : exception [{}] appliquée : {} EUR + {} EUR tickets restaurant - {} EUR personnels = {} EUR à partager{}.'.format(
+            item.name, euros(original), euros(item.meal_voucher_cents), euros(item.personal_cents), euros(remaining),
             ' (aucun envoi)' if not remaining else ''))
         for candidate_connection, candidate_id, _, _ in candidates:
             if candidate_connection in blocked:

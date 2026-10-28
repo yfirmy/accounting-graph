@@ -184,6 +184,57 @@ class SchemaMigrationTests(unittest.TestCase):
         self.assertEqual(self.connection.execute('SELECT * FROM TRANSACTIONS').fetchall(), transactions)
         self.assertEqual(self.connection.execute('SELECT * FROM SPLITWISE_EXPORTS').fetchall(), [])
 
+    def legacy_adjustment(self):
+        self.migrate()
+        self.connection.executescript("""
+            DROP TABLE SPLITWISE_ADJUSTMENTS;
+            CREATE TABLE SPLITWISE_ADJUSTMENTS (
+                EXCEPTION_ID TEXT PRIMARY KEY NOT NULL, TRANSACTION_ID TEXT NOT NULL UNIQUE,
+                RULE_ID TEXT NOT NULL, PURCHASE_DATE TEXT NOT NULL,
+                PERSONAL_CENTS INTEGER NOT NULL CHECK (PERSONAL_CENTS > 0),
+                ORIGINAL_CENTS INTEGER NOT NULL CHECK (ORIGINAL_CENTS >= PERSONAL_CENTS),
+                APPLIED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (RULE_ID, PURCHASE_DATE));
+            INSERT INTO SPLITWISE_ADJUSTMENTS VALUES
+                ('old', '1', 'shop', '2026-10-24', 1000, 6000, '2026-10-24 12:00:00');
+        """)
+
+    def test_voucher_upgrade_preserves_history_backup_and_is_repeatable(self):
+        self.legacy_adjustment()
+        before = list(self.connection.iterdump())
+        banks = self.connection.execute('SELECT * FROM TRANSACTIONS').fetchall()
+        backups = set(self.path.parent.glob('backups/*.db'))
+        self.migrate(dry_run=True)
+        self.assertEqual(list(self.connection.iterdump()), before)
+        self.assertEqual(set(self.path.parent.glob('backups/*.db')), backups)
+        self.migrate()
+        added = set(self.path.parent.glob('backups/*.db')) - backups
+        self.assertEqual(len(added), 1)
+        with contextlib.closing(sqlite3.connect(str(added.pop()))) as backup:
+            self.assertEqual(list(backup.iterdump()), before)
+        self.assertEqual(self.connection.execute('SELECT * FROM TRANSACTIONS').fetchall(), banks)
+        self.assertEqual(self.connection.execute('SELECT * FROM SPLITWISE_ADJUSTMENTS').fetchone(),
+                         ('old', '1', 'shop', '2026-10-24', 1000, 6000, '2026-10-24 12:00:00', 0))
+        after = list(self.connection.iterdump())
+        backups = set(self.path.parent.glob('backups/*.db'))
+        self.migrate()
+        self.assertEqual(list(self.connection.iterdump()), after)
+        self.assertEqual(set(self.path.parent.glob('backups/*.db')), backups)
+        with self.connection:
+            self.connection.execute("""INSERT INTO SPLITWISE_ADJUSTMENTS
+                (EXCEPTION_ID, TRANSACTION_ID, RULE_ID, PURCHASE_DATE, PERSONAL_CENTS,
+                 ORIGINAL_CENTS, MEAL_VOUCHER_CENTS)
+                VALUES ('voucher', '2', 'shop', '2026-10-25', 0, 6000, 2500)""")
+        self.assertEqual(self.connection.execute('PRAGMA integrity_check').fetchall(), [('ok',)])
+
+    def test_failed_import_rolls_back_voucher_upgrade(self):
+        self.legacy_adjustment()
+        before = list(self.connection.iterdump())
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'failed import'):
+            with import_transaction(self.connection):
+                raise ValueError('failed import')
+        self.assertEqual(list(self.connection.iterdump()), before)
+
     def test_adding_personal_adjustments_is_backed_up_and_preserves_history(self):
         self.migrate()
         self.connection.execute('DROP TABLE SPLITWISE_ADJUSTMENTS')

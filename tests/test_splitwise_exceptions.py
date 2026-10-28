@@ -174,6 +174,22 @@ class PersonalExceptionTests(unittest.TestCase):
         self.assertEqual([c.args[0]['cost'] for c in self.client.create.call_args_list], ['50.00', '60.00'])
         self.assertEqual(current.execute('SELECT COUNT(*) FROM SPLITWISE_ADJUSTMENTS').fetchone()[0], 0)
 
+    def test_old_read_only_account_adjustment_is_recognized_without_migration(self):
+        previous = self.database(self.root / 'account_123111.db')
+        self.queue('previous', connection=previous)
+        sync_pending(previous, self.settings, client=self.client, prompt=self.prompt)
+        previous.execute('ALTER TABLE SPLITWISE_ADJUSTMENTS RENAME TO SAVED_ADJUSTMENTS')
+        previous.execute("""CREATE TABLE SPLITWISE_ADJUSTMENTS AS
+            SELECT EXCEPTION_ID, TRANSACTION_ID, RULE_ID, PURCHASE_DATE,
+                   PERSONAL_CENTS, ORIGINAL_CENTS, APPLIED_AT FROM SAVED_ADJUSTMENTS""")
+        previous.execute('DROP TABLE SAVED_ADJUSTMENTS')
+        previous.commit()
+        before = list(previous.iterdump())
+        self.queue('today')
+        self.sync()
+        self.assertEqual([call.args[0]['cost'] for call in self.client.create.call_args_list], ['50.00', '60.00'])
+        self.assertEqual(list(previous.iterdump()), before)
+
     def test_unimported_account_candidate_blocks_automatic_selection(self):
         other = self.database(self.root / 'account_123111.db')
         current = self.database(self.root / 'account_123222.db')
@@ -182,6 +198,88 @@ class PersonalExceptionTests(unittest.TestCase):
         sync_pending(current, self.settings, client=self.client, prompt=self.prompt)
         self.client.create.assert_not_called()
         self.prompt.assert_called_once()
+
+    def voucher_exception(self, personal=0, voucher=2500):
+        return PersonalException('courses', 'carrefour', '2026-10-24', personal, 'XXXXXX', voucher)
+
+    def test_vouchers_are_added_once_without_changing_bank_data(self):
+        self.settings.exceptions = [self.voucher_exception()]
+        self.queue()
+        before = self.connection.execute('SELECT * FROM TRANSACTIONS').fetchall()
+        # Persist the adjustment even while credentials are unavailable.
+        with patch.dict('os.environ', {}, clear=True):
+            sync_pending(self.connection, self.settings, prompt=self.prompt)
+        self.sync()
+        self.sync()
+        self.client.create.assert_called_once()
+        self.assertEqual(self.client.create.call_args.args[0]['cost'], '85.00')
+        self.assertEqual(self.connection.execute('SELECT * FROM TRANSACTIONS').fetchall(), before)
+        self.assertEqual(self.connection.execute('SELECT ORIGINAL_CENTS, PERSONAL_CENTS, MEAL_VOUCHER_CENTS '
+                                                'FROM SPLITWISE_ADJUSTMENTS').fetchone(), (6000, 0, 2500))
+        self.settings.exceptions = [self.voucher_exception(voucher=2000)]
+        with self.assertRaisesRegex(ValueError, 'déjà appliquée'):
+            self.sync()
+
+    def test_vouchers_and_personal_deduction_are_combined(self):
+        self.settings.exceptions = [self.voucher_exception(personal=1000)]
+        self.queue()
+        self.sync()
+        self.assertEqual(self.client.create.call_args.args[0]['cost'], '75.00')
+
+    def test_voucher_total_controls_excess_and_zero_personal_deductions(self):
+        self.settings.exceptions = [self.voucher_exception(personal=8501)]
+        self.queue()
+        self.sync()
+        self.client.create.assert_not_called()
+        self.settings.exceptions = [self.voucher_exception(personal=8500)]
+        self.sync()
+        self.assertEqual(self.connection.execute('SELECT STATE FROM SPLITWISE_EXPORTS').fetchone()[0], 'skipped')
+        self.client.create.assert_not_called()
+
+    def test_voucher_duplicate_detection_uses_full_cost(self):
+        self.settings.exceptions = [self.voucher_exception()]
+        self.queue()
+        self.client.expenses.return_value = [dict(id=8, cost='85', date='2026-10-24T12:00:00Z',
+                                                currency_code='EUR', description='Courses')]
+        self.prompt.return_value = '1'
+        self.sync()
+        self.client.create.assert_not_called()
+        self.assertIn('85.00 EUR', self.prompt.call_args.args[0])
+        self.assertEqual(self.connection.execute('SELECT STATE FROM SPLITWISE_EXPORTS').fetchone()[0], 'linked')
+
+    def test_voucher_ambiguity_blocks_until_selected(self):
+        self.settings.exceptions = [self.voucher_exception()]
+        self.queue('one')
+        self.queue('two', 7000)
+        self.sync()
+        self.client.create.assert_not_called()
+        self.prompt.return_value = '2'
+        self.sync()
+        self.assertEqual([call.args[0]['cost'] for call in self.client.create.call_args_list], ['60.00', '95.00'])
+
+    def test_voucher_does_not_modify_already_sent_or_uncertain(self):
+        self.settings.exceptions = [self.voucher_exception()]
+        self.test_already_sent_or_uncertain_expense_is_not_modified()
+
+    def test_voucher_update_is_atomic(self):
+        self.settings.exceptions = [self.voucher_exception()]
+        self.test_adjustment_and_payload_update_are_atomic()
+
+    def test_voucher_configuration_and_invalid_amounts(self):
+        path = self.root / 'vouchers.ini'
+        fields = '[courses]\naccount=XXXXXX\nrule=carrefour\npurchase_date=2026-10-24\n'
+        path.write_text(fields + 'meal_voucher_amount=25,50\n')
+        self.assertEqual(load_exceptions(path, self.settings.rules), [self.voucher_exception(voucher=2550)])
+        path.write_text(fields + 'meal_voucher_amount=25\npersonal_amount=10\n')
+        self.assertEqual(load_exceptions(path, self.settings.rules), [self.voucher_exception(personal=1000)])
+        for suffix in ('', 'meal_voucher_amount=0', 'meal_voucher_amount=-1',
+                       'meal_voucher_amount=1.001', 'meal_voucher_amount=NaN',
+                       'meal_voucher_amount=Infinity', 'meal_voucher_amount=abc',
+                       'meal_voucher_amount=25\nunknown=1'):
+            with self.subTest(suffix=suffix):
+                path.write_text(fields + suffix)
+                with self.assertRaises(ValueError):
+                    load_exceptions(path, self.settings.rules)
 
     def test_config_has_only_rule_date_and_personal_amount(self):
         path = self.root / 'exceptions.ini'

@@ -33,7 +33,9 @@ def backup_before_upgrade(connection, dry_run=False):
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'SPLITWISE_ADJUSTMENTS'").fetchone()
     if (columns.get('ID', '').upper() != 'INTEGER'
             and {'POSTED_AT', 'AMOUNT_CENTS', 'MATCHED_RULES'} <= columns.keys()
-            and observations and alerts and exports and adjustments):
+            and observations and alerts and exports and adjustments
+            and 'MEAL_VOUCHER_CENTS' in {row[1] for row in connection.execute(
+                'PRAGMA table_info(SPLITWISE_ADJUSTMENTS)')}):
         return None
     filename = next(row[2] for row in connection.execute('PRAGMA database_list') if row[1] == 'main')
     if not filename:
@@ -92,6 +94,39 @@ def _upgrade_transaction_ids(connection, columns):
     return objects
 
 
+def _prepare_adjustments(connection):
+    columns = {row[1] for row in connection.execute('PRAGMA table_info(SPLITWISE_ADJUSTMENTS)')}
+    migrate = columns and 'MEAL_VOUCHER_CENTS' not in columns
+    objects = []
+    if migrate:
+        expected = {'EXCEPTION_ID', 'TRANSACTION_ID', 'RULE_ID', 'PURCHASE_DATE',
+                    'PERSONAL_CENTS', 'ORIGINAL_CENTS', 'APPLIED_AT'}
+        if columns != expected:
+            raise ValueError('Unexpected SPLITWISE_ADJUSTMENTS columns; migration cancelled')
+        objects = connection.execute('''SELECT sql FROM sqlite_master
+            WHERE tbl_name = 'SPLITWISE_ADJUSTMENTS' AND type IN ('index', 'trigger')
+            AND sql IS NOT NULL''').fetchall()
+    table = 'SPLITWISE_ADJUSTMENTS_UPGRADE' if migrate else 'SPLITWISE_ADJUSTMENTS'
+    connection.execute('''CREATE TABLE IF NOT EXISTS {} (
+        EXCEPTION_ID TEXT PRIMARY KEY NOT NULL, TRANSACTION_ID TEXT NOT NULL UNIQUE,
+        RULE_ID TEXT NOT NULL, PURCHASE_DATE TEXT NOT NULL,
+        PERSONAL_CENTS INTEGER NOT NULL CHECK (PERSONAL_CENTS >= 0),
+        ORIGINAL_CENTS INTEGER NOT NULL CHECK (ORIGINAL_CENTS >= 0),
+        APPLIED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        MEAL_VOUCHER_CENTS INTEGER NOT NULL DEFAULT 0 CHECK (MEAL_VOUCHER_CENTS >= 0),
+        CHECK (PERSONAL_CENTS > 0 OR MEAL_VOUCHER_CENTS > 0),
+        CHECK (ORIGINAL_CENTS + MEAL_VOUCHER_CENTS >= PERSONAL_CENTS),
+        UNIQUE (RULE_ID, PURCHASE_DATE))'''.format(table))
+    if migrate:
+        fields = 'EXCEPTION_ID, TRANSACTION_ID, RULE_ID, PURCHASE_DATE, PERSONAL_CENTS, ORIGINAL_CENTS, APPLIED_AT'
+        connection.execute('INSERT INTO SPLITWISE_ADJUSTMENTS_UPGRADE (' + fields +
+                           ') SELECT ' + fields + ' FROM SPLITWISE_ADJUSTMENTS')
+        connection.execute('DROP TABLE SPLITWISE_ADJUSTMENTS')
+        connection.execute('ALTER TABLE SPLITWISE_ADJUSTMENTS_UPGRADE RENAME TO SPLITWISE_ADJUSTMENTS')
+        for (sql,) in objects:
+            connection.execute(sql)
+
+
 def _prepare_schema(connection):
     connection.execute('''CREATE TABLE IF NOT EXISTS TRANSACTIONS (
         ID TEXT PRIMARY KEY NOT NULL, DATE TEXT NOT NULL,
@@ -128,13 +163,7 @@ def _prepare_schema(connection):
             ('pending', 'sending', 'uncertain', 'submitted', 'linked', 'skipped')),
         MARKER TEXT NOT NULL UNIQUE, PAYLOAD TEXT, EXPENSE_ID TEXT,
         UPDATED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
-    connection.execute('''CREATE TABLE IF NOT EXISTS SPLITWISE_ADJUSTMENTS (
-        EXCEPTION_ID TEXT PRIMARY KEY NOT NULL, TRANSACTION_ID TEXT NOT NULL UNIQUE,
-        RULE_ID TEXT NOT NULL, PURCHASE_DATE TEXT NOT NULL,
-        PERSONAL_CENTS INTEGER NOT NULL CHECK (PERSONAL_CENTS > 0),
-        ORIGINAL_CENTS INTEGER NOT NULL CHECK (ORIGINAL_CENTS >= PERSONAL_CENTS),
-        APPLIED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE (RULE_ID, PURCHASE_DATE))''')
+    _prepare_adjustments(connection)
     # Restore triggers only after backfilling the new columns, so migration
     # does not fire application-specific update triggers on historical rows.
     for (sql,) in objects:
