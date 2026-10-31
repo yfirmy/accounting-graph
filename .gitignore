@@ -3,3 +3,5 @@
 /sql/
 __pycache__/
 *.py[cod]
+.venv/
+.venv314/
