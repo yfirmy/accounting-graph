@@ -1,6 +1,28 @@
 # accounting-graph
 Scripts to store and graph personal bank accounts data
 
+## Installation avec Python 3.14 sur macOS
+
+Installer Python 3.14 pour macOS depuis [python.org](https://www.python.org/downloads/macos/),
+puis créer un environnement distinct de l'ancien environnement Python 3.8 :
+
+```sh
+cd /chemin/vers/accounting-graph
+python3.14 --version
+python3.14 -m venv .venv314
+source .venv314/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip check
+MPLBACKEND=Agg python -m unittest discover -s tests
+python accounts-analysis.py --dry-run
+```
+
+Le nouvel environnement ne modifie pas `.venv` : conserver ce dernier pendant
+la vérification. Pour les lancements quotidiens, activer `.venv314` ou utiliser
+directement `.venv314/bin/python accounts-analysis.py` depuis le projet.
+Les variables d'environnement restent celles du terminal ou du lanceur utilisé.
+
 ## accounts-analysis
  - import OFX files (or CSV files)
  - stores imported transactions into a SQLite table
