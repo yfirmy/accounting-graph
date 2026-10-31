@@ -1,3 +1,4 @@
+# Dépendances testées avec Python 3.14 (voir README.md).
 backports.entry-points-selectable==1.3.0
 beautifulsoup4==4.15.0
 certifi==2026.10.23
