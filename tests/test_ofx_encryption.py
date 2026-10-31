@@ -79,7 +79,8 @@ class EncryptionTests(unittest.TestCase):
 class GpgIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.directory = tempfile.TemporaryDirectory(prefix='ofx-gpg-')
+        # GnuPG agent sockets have a short path limit, especially on macOS.
+        cls.directory = tempfile.TemporaryDirectory(prefix='ofx-gpg-', dir='/tmp')
         cls.root = Path(cls.directory.name)
         cls.home = cls.root / 'keyring'
         cls.home.mkdir(mode=0o700)
@@ -109,7 +110,7 @@ class GpgIntegrationTests(unittest.TestCase):
     def test_real_round_trip_removes_original_and_preserves_exact_bytes(self):
         public_key = subprocess.run(['gpg', '--batch', '--export', self.key_id],
                                     check=True, capture_output=True).stdout
-        public_home = Path(self.files.name) / 'public-only'
+        public_home = self.root / 'public-only'
         public_home.mkdir(mode=0o700)
         with patch.dict(os.environ, {'GNUPGHOME': str(public_home)}):
             subprocess.run(['gpg', '--batch', '--import'], input=public_key,
