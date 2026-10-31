@@ -1,3 +1,5 @@
 /db/
 /conf/
 /sql/
+__pycache__/
+*.py[cod]
