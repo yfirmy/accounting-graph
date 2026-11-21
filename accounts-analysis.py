@@ -19,10 +19,11 @@ import calendar
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from balance_checks import cents, latest_observation, reconcile_import, verify_stored_balance
-from legitimacy_checks import load_rules, refresh_alerts, export_alerts
+from database_schema import alert_columns, alerts_need_upgrade, backup_before_upgrade, prepare_alerts_schema
+from legitimacy_checks import load_rules, refresh_alerts, read_alerts, acknowledge_alert, export_alerts
 from ofx_input import collect_latest_ofx, print_file_dates, read_ofx
 from ofx_encryption import encryption_settings, encrypt_ofx
-from splitwise_sync import load_settings as load_splitwise_settings, enqueue, sync_pending, sync_pending_many
+from splitwise_sync import ask, load_settings as load_splitwise_settings, enqueue, sync_pending, sync_pending_many
 from splitwise_exceptions import load_exceptions
 
 MONTHS_IN_YEAR = 12
@@ -406,14 +407,16 @@ def process_statements(new_account_statements: [AccountStatement], dry_run_mode:
         raise ValueError('Missing output directory for transaction alerts')
     reporting_by_account = {}
     connections = {}
-    for new_account_statement in new_account_statements:
+    last_statements = {statement.account_id: index for index, statement in enumerate(new_account_statements)}
+    for index, new_account_statement in enumerate(new_account_statements):
         account_id = new_account_statement.account_id
         if account_id not in connections:
             connections[account_id] = open_database_connection(account_id)
         with connections[account_id] as connection:
             alerts = prepare_and_analyse_history(
                 new_account_statement, connection, dry_run_mode, debug_mode, rules=rules,
-                splitwise=splitwise, defer_splitwise=True)
+                splitwise=splitwise, defer_splitwise=True,
+                defer_alert_review=index != last_statements[account_id])
             account_label = '{} ({})'.format(get_account_name(new_account_statement.account_id),
                                             get_masked_account_id(new_account_statement.account_id))
             reporting_by_account[new_account_statement.account_id] = [(account_label,) + row for row in alerts]
@@ -425,29 +428,50 @@ def process_statements(new_account_statements: [AccountStatement], dry_run_mode:
 
 
 def print_transaction_alerts(account_id, alerts):
-    summary = 'Transactions à examiner pour le compte {} "{}" : {}'.format(
+    summary = 'Alertes pour le compte {} "{}" : {}'.format(
         str(account_id), get_account_name(account_id), len(alerts))
     print("\n" + '\033[34m' + summary + '\033[0m' + "\n")
-    for identifier, rule, date, label, amount, reasons in alerts:
+    for alert in alerts:
         print('\033[91m' + '  {} | {} | Transaction {} | Règle {}'.format(
-            datetime.datetime.fromisoformat(date).strftime('%d/%m/%Y %H:%M:%S'),
-            format_amount(amount / 100), identifier, '\033[0m' + '"' + rule.replace("_", " ") + '"' ))
-        print('\033[33m' + '    {}'.format(label) + '\033[0m')
-        print('\033[91m' + '    Motifs : {}'.format(reasons) + '\033[0m')
+            datetime.datetime.fromisoformat(alert.date).strftime('%d/%m/%Y %H:%M:%S'),
+            format_amount(alert.amount / 100), alert.identifier,
+            '\033[0m' + '"' + alert.rule.replace('_', ' ') + '"'))
+        print('\033[33m' + '    {}'.format(alert.label) + '\033[0m')
+        print('\033[91m' + '    Motifs : {}'.format(alert.reasons) + '\033[0m')
+        print('    Alerte acquittée : ' + ('Oui' if alert.acknowledged_at is not None else 'Non'))
         print("\n")
 
 
-def prepare_and_analyse_history(new_statements: AccountStatement, connection, dry_run_mode: bool, debug_mode: bool, rules=None, splitwise=None, defer_splitwise=False):
+def review_transaction_alerts(account_id, connection, alerts):
+    account = '{} ({})'.format(get_account_name(account_id), get_masked_account_id(str(account_id)))
+    for alert in alerts:
+        if alert.acknowledged_at is not None:
+            continue
+        question = ('Alerte pour {} — transaction {} du {} — {} — {}\n'
+                    'Règle {} — {}\nAcquitter cette alerte ? [oui/non]').format(
+            account, alert.identifier, datetime.datetime.fromisoformat(alert.date).strftime('%d/%m/%Y %H:%M:%S'),
+            format_amount(alert.amount / 100), alert.label, alert.rule.replace('_', ' '), alert.reasons)
+        if ask(question, {'oui', 'non'}, service='Alertes') == 'oui':
+            acknowledge_alert(connection, alert)
+    return read_alerts(connection)
+
+
+def prepare_and_analyse_history(new_statements: AccountStatement, connection, dry_run_mode: bool, debug_mode: bool,
+                                rules=None, splitwise=None, defer_splitwise=False, defer_alert_review=False):
     if splitwise is not None and getattr(new_statements, 'currency', 'EUR') != 'EUR':
         raise ValueError('Splitwise : cette intégration exige un relevé en EUR (CURDEF).')
     alerts = []
+    new_transaction_ids = set()
     def check_legitimacy(database):
-        alerts.extend(refresh_alerts(database, new_statements.account_id, rules))
-    def queue_splitwise(database, operation):
-        enqueue(database, splitwise, new_statements.account_id, operation)
+        alerts.extend(refresh_alerts(database, new_statements.account_id, rules,
+                                    new_transaction_ids=new_transaction_ids))
+    def on_new_transaction(database, operation):
+        new_transaction_ids.add(str(operation.id))
+        if splitwise is not None:
+            enqueue(database, splitwise, new_statements.account_id, operation)
     status = reconcile_import(new_statements, connection, dry_run=dry_run_mode,
                               after_reconcile=check_legitimacy if rules is not None else None,
-                              on_new_transaction=queue_splitwise if splitwise is not None else None)
+                              on_new_transaction=on_new_transaction if rules is not None or splitwise is not None else None)
     messages = {
         'baseline-unverified': 'Initial bank balance recorded; no reliable previous reference to verify it.',
         'reconciled': 'Balance reconciled exactly.',
@@ -456,7 +480,9 @@ def prepare_and_analyse_history(new_statements: AccountStatement, connection, dr
         'historical-reconciled': 'Older statement reconciled with the latest bank balance.',
     }
     print(('Dry run: ' if dry_run_mode else '') + messages[status])
-    if rules is not None:
+    if rules is not None and (dry_run_mode or not defer_alert_review):
+        if not dry_run_mode:
+            alerts = review_transaction_alerts(new_statements.account_id, connection, alerts)
         print_transaction_alerts(new_statements.account_id, alerts)
     if dry_run_mode:
         return alerts
@@ -502,12 +528,18 @@ def replay_analysis(dry_run_mode=False, debug_mode=False):
         mode = 'ro' if dry_run_mode else 'rw'
         with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=' + mode, uri=True)) as connection:
             try:
-                # Replace alerts atomically without inserting banking data.
+                upgrade = not dry_run_mode and alert_columns(connection) and alerts_need_upgrade(connection)
+                if upgrade:
+                    backup_before_upgrade(connection)
                 with connection:
                     connection.execute('BEGIN' if dry_run_mode else 'BEGIN IMMEDIATE')
                     verify_stored_balance(connection)
+                    if upgrade:
+                        prepare_alerts_schema(connection)
                     alerts = refresh_alerts(connection, account_id, rules,
                                             persist=not dry_run_mode, update_matches=False)
+                if not dry_run_mode:
+                    alerts = review_transaction_alerts(account_id, connection, alerts)
                 print_transaction_alerts(account_id, alerts)
                 if not dry_run_mode:
                     Path(output).expanduser().mkdir(parents=True, exist_ok=True)
@@ -571,7 +603,7 @@ def process_import(filename: str, dry_run_mode: bool, debug_mode: bool, csv_outp
 
 
 def cli(argv=None):
-    parser = argparse.ArgumentParser(description='Sans --import : rejouer les contrôles et graphiques, et remplacer les alertes sans importer de transactions.')
+    parser = argparse.ArgumentParser(description='Sans --import : rejouer les contrôles et graphiques, et actualiser les alertes sans importer de transactions.')
     parser.add_argument(IMPORT_FLAG, dest='import_file', nargs='?', const='',
                         metavar='FICHIER_OFX', help='Sans chemin : récupérer le dernier téléchargement.')
     parser.add_argument(DRY_RUN_FLAG, action='store_true')

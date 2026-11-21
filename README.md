@@ -40,16 +40,16 @@ python3 accounts-analysis.py --dry-run
 
 Sans `--import`, le programme analyse les bases `account_*.db` existantes dans
 le répertoire `database`, pour les comptes déclarés dans la configuration.
-Il recalcule les alertes avec les règles actuelles, remplace `TRANSACTION_ALERTS`
-et régénère les graphiques et `transaction_alerts.csv` dans `output`.
-Le remplacement des alertes est atomique pour chaque compte : un échec des
-contrôles laisse ses anciennes alertes intactes.
+Il actualise `TRANSACTION_ALERTS` avec les règles actuelles, propose d’acquitter
+les alertes en attente et régénère les graphiques et `transaction_alerts.csv`
+dans `output`. La mise à jour des contrôles est atomique pour chaque compte.
 
 Les transactions (y compris `MATCHED_RULES`) et les observations de solde restent
 inchangées. Les correspondances des règles sont recalculées en mémoire pour les
-contrôles. Aucun téléchargement n'est récupéré et aucune migration n'est lancée
-sans import.
-Une base ancienne ou sans référence de solde nécessite d'abord un import OFX.
+contrôles. Le programme peut ajouter les colonnes de suivi des alertes après
+avoir sauvegardé la base. Aucun téléchargement n'est récupéré.
+Une base dont le schéma bancaire est ancien ou qui n’a pas de référence de
+solde nécessite d’abord un import OFX.
 
 Le contrôle du solde vérifie que les transactions stockées correspondent toujours
 au total enregistré lors de la dernière observation. Sans nouveau relevé, il ne
@@ -207,7 +207,7 @@ back to the original database, while the independent backup remains available.
 
 `BALANCE_OBSERVATIONS` stores the bank balance, its exact date, the known
 transaction total and the reconciliation status at each import.
-`TRANSACTION_ALERTS` stores the current transaction legitimacy report.
+`TRANSACTION_ALERTS` tracks detected and pending transaction alerts.
 `TRANSACTIONS_UPGRADE` exists only while replacing the old integer-ID table; after
 success it has become `TRANSACTIONS`, and after failure it is rolled back.
 
@@ -265,10 +265,10 @@ Une règle sans aucune borne de montant continue à contrôler seulement les dat
 et les occurrences, quel que soit le signe de la transaction.
 
 Pour limiter une règle aux habitudes courantes, ajouter par exemple
-`start_date = 2026-10-01` dans sa section. Les transactions à partir du 1er octobre
-inclus seront vérifiées. Celles de septembre ne produiront aucune alerte et ne
-compteront pas, même dans les plafonds hebdomadaires ou annuels couvrant les deux
-périodes. Les périodes restent calendaires ; les plafonds ne sont pas proratisés.
+`start_date = 2026-10-01` dans sa section. Cette règle vérifie les transactions à
+partir du 1er octobre inclus. Les opérations de septembre sont exclues de ses
+compteurs, même pour les plafonds hebdomadaires ou annuels couvrant les deux
+périodes. Les périodes et les plafonds restent calendaires.
 `allowed_from` reste différent : il signale une date interdite au lieu d'exclure
 la transaction de l'analyse.
 
@@ -280,17 +280,11 @@ règles qui nécessitent une autre date :
 start_date = 2026-10-01
 ```
 
-Au prochain import, les anciennes alertes exclues par cette date disparaissent
-de la table et du CSV. Les transactions historiques restent intactes et continuent
-à être utilisées pour la vérification du solde et les graphiques.
-
 Les règles s'appliquent **après l'acceptation du solde**, sans bloquer un import
 pour une simple alerte. Elles examinent **tout l'historique stocké des comptes
 présents dans le fichier OFX**, à partir du `start_date` de chaque règle lorsqu'il
 est défini, y compris au premier import servant de référence
 de solde. Les règles d'un compte ne comptent jamais les transactions d'un autre.
-Une transaction sans correspondance de libellé n'est pas signalée, sauf s'il
-s'agit d'un prélèvement inattendu (voir ci-dessous).
 
 Les compteurs utilisent des jours calendaires, des semaines ISO (lundi à
 dimanche), des mois calendaires et des années civiles. Les dates suivent la
@@ -300,14 +294,7 @@ puis l'identifiant en cas d'égalité : avec une limite de quatre par jour, la
 cinquième occurrence et les suivantes sont signalées. Toutes les occurrences
 correspondantes comptent, même si leur montant ou leur date est déjà anormal.
 
-Chaque compte dispose d'une table `TRANSACTION_ALERTS`, contenant une ligne par
-transaction et règle enfreinte, avec tous les motifs de cette règle. Elle est
-recalculée à chaque import : une modification/suppression de règle corrige aussi
-les anciennes alertes, et un réimport ne crée pas de doublons. La création de
-cette table déclenche une sauvegarde avant migration pour les bases existantes.
-L'historique des transactions et les tags ne sont pas modifiés par ce contrôle.
-
-### Couverture des prélèvements
+### Transactions non reconnues
 
 La colonne `TRANSACTIONS.MATCHED_RULES` contient les noms des règles applicables
 sous forme de liste JSON, par exemple `["bouygues_telecom", "Prélèvements"]`.
@@ -318,37 +305,43 @@ supprime pas cette classification et déclenche toujours son alerte habituelle.
 La colonne est recalculée à chaque import ; les références à une règle supprimée,
 renommée ou désactivée ne restent pas dans les transactions.
 
-Après cette classification, tout libellé commençant par
-`(PRELEVEMENT|PrÃ©lÃ¨vement|Prélèvement)` sans règle applicable produit une alerte
-**« Prélèvement inattendu »**, sous l'identifiant réservé
-`prélèvement_inconnu`. Cette alerte utilise la même table, la même sortie
-console et le même CSV que les dépassements. Les autres opérations non classées
-restent ignorées. Un compte sans aucune règle bénéficie aussi de ce contrôle.
+Chaque transaction nouvellement importée dont `MATCHED_RULES` vaut `[]` déclenche
+une alerte **« Transaction non reconnue »**, sous l’identifiant réservé
+`transaction_non_reconnue`. Cela inclut les opérations antidatées et les comptes
+sans règle. Les prélèvements sans correspondance gardent le libellé
+**« Prélèvement inattendu »** et l’identifiant `prélèvement_inconnu`.
 
-La date de démarrage de cette vérification générale est celle de
-`[DEFAULT] start_date`. Sans date globale, elle est la plus ancienne date de
-démarrage des règles actives du compte, si elles en possèdent toutes une ; sinon
-tout l'historique est vérifié. Une règle dont la date de démarrage est ultérieure
-ne couvre pas un prélèvement situé dans cette période de surveillance, mais avant
-sa propre activation. Les opérations avant la date générale ne génèrent pas
-d'alertes de prélèvement inattendu.
+Pour les prélèvements déjà en base, le contrôle historique démarre à
+`[DEFAULT] start_date`. Sans date globale, il démarre à la plus ancienne date de
+démarrage des règles actives du compte si elles en possèdent toutes une, ou au
+début de l’historique dans les autres cas. Une alerte de transaction non reconnue
+se reproduit tant qu’aucune règle ne couvre la transaction.
 
-**Une règle générale qui correspond à tous les prélèvements les classe tous
-comme connus.** Pour détecter les créanciers inconnus, désactiver cette règle
-générale et conserver des règles spécifiques aux créanciers attendus.
+### Acquittement et export
 
-L'ajout de `MATCHED_RULES` passe par la migration avec sauvegarde préalable.
-Les dates, montants, libellés, identifiants et tags historiques sont conservés.
-`--dry-run` annule aussi la mise à jour de cette colonne.
+Chaque compte conserve une ligne dans `TRANSACTION_ALERTS` par transaction et
+règle signalée. `CREATED_AT` enregistre la première détection et `CHECKED_AT` la
+dernière détection. Quand une alerte se reproduit, le contrôle actualise
+uniquement `CHECKED_AT`. La migration reprend l’ancien `CHECKED_AT` comme date de
+création des alertes déjà présentes.
+
+Le terminal demande d’acquitter chaque alerte en attente. Répondre `oui`
+enregistre la date UTC dans `ACKNOWLEDGED_AT`. Répondre `non`, appuyer sur Entrée
+ou lancer le programme sans terminal interactif laisse l’alerte en attente pour
+le prochain passage. Une alerte acquittée figure dans le rapport de l’exécution
+et reste visible tant qu’elle se reproduit. Si le contrôle ne la détecte plus,
+le programme la retire lors d’un passage suivant dès lors qu’elle est acquittée.
 
 À la fin du traitement, **`transaction_alerts.csv`** est écrit dans le répertoire
 `[Directories] output`, avec les graphiques. Ce fichier regroupe les alertes des
 comptes traités durant cette exécution et remplace le précédent rapport. Il est
 en UTF-8 avec BOM, utilise `;` comme séparateur et la virgule décimale. Les comptes
-sont masqués ; les libellés et identifiants de transactions restent présents.
+sont masqués et les libellés et identifiants de transactions restent présents.
+La colonne `Alerte acquittée` indique `Oui` ou `Non` pour chaque ligne, avec la
+date UTC d’acquittement dans la colonne suivante.
 S'il n'y a aucune alerte, le fichier contient seulement les en-têtes, évitant de
-laisser un ancien rapport périmé. `--dry-run` calcule le nombre d'alertes mais ne
-conserve ni modifications de table ni export CSV.
+laisser un ancien rapport périmé. `--dry-run` affiche les alertes sans poser de
+question, modifier les tables ou écrire le CSV.
 
 Run the regression suite with:
 

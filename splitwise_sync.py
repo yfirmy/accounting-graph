@@ -299,10 +299,10 @@ class Client:
         return str(expenses[0]['id'])
 
 
-def ask(message, choices):
+def ask(message, choices, *, service='Splitwise'):
     """Never interpret EOF, Enter or noninteractive execution as consent."""
     if not sys.stdin.isatty():
-        print('Splitwise : confirmation reportée (terminal interactif requis).')
+        print('{} : confirmation reportée (terminal interactif requis).'.format(service))
         return 'later'
     try:
         answer = input(message + '\n> ').strip().lower()

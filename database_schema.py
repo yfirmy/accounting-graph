@@ -13,6 +13,14 @@ def _columns(connection):
     return {row[1]: row[2] for row in connection.execute('PRAGMA table_info(TRANSACTIONS)')}
 
 
+def alert_columns(connection):
+    return {row[1] for row in connection.execute('PRAGMA table_info(TRANSACTION_ALERTS)')}
+
+
+def alerts_need_upgrade(connection):
+    return not {'CREATED_AT', 'ACKNOWLEDGED_AT'} <= alert_columns(connection)
+
+
 def backup_before_upgrade(connection, dry_run=False):
     """Back up committed, on-disk databases before their first schema upgrade.
 
@@ -25,15 +33,13 @@ def backup_before_upgrade(connection, dry_run=False):
         return None
     observations = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'BALANCE_OBSERVATIONS'").fetchone()
-    alerts = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'TRANSACTION_ALERTS'").fetchone()
     exports = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'SPLITWISE_EXPORTS'").fetchone()
     adjustments = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'SPLITWISE_ADJUSTMENTS'").fetchone()
     if (columns.get('ID', '').upper() != 'INTEGER'
             and {'POSTED_AT', 'AMOUNT_CENTS', 'MATCHED_RULES'} <= columns.keys()
-            and observations and alerts and exports and adjustments
+            and observations and exports and adjustments and not alerts_need_upgrade(connection)
             and 'MEAL_VOUCHER_CENTS' in {row[1] for row in connection.execute(
                 'PRAGMA table_info(SPLITWISE_ADJUSTMENTS)')}):
         return None
@@ -127,6 +133,22 @@ def _prepare_adjustments(connection):
             connection.execute(sql)
 
 
+def prepare_alerts_schema(connection):
+    connection.execute('''CREATE TABLE IF NOT EXISTS TRANSACTION_ALERTS (
+        TRANSACTION_ID TEXT NOT NULL, RULE_ID TEXT NOT NULL,
+        TRANSACTION_DATE TEXT NOT NULL, LABEL TEXT NOT NULL,
+        AMOUNT_CENTS INTEGER NOT NULL, REASONS TEXT NOT NULL,
+        CHECKED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CREATED_AT TEXT, ACKNOWLEDGED_AT TEXT,
+        PRIMARY KEY (TRANSACTION_ID, RULE_ID))''')
+    columns = alert_columns(connection)
+    if 'CREATED_AT' not in columns:
+        connection.execute('ALTER TABLE TRANSACTION_ALERTS ADD COLUMN CREATED_AT TEXT')
+        connection.execute('UPDATE TRANSACTION_ALERTS SET CREATED_AT = CHECKED_AT')
+    if 'ACKNOWLEDGED_AT' not in columns:
+        connection.execute('ALTER TABLE TRANSACTION_ALERTS ADD COLUMN ACKNOWLEDGED_AT TEXT')
+
+
 def _prepare_schema(connection):
     connection.execute('''CREATE TABLE IF NOT EXISTS TRANSACTIONS (
         ID TEXT PRIMARY KEY NOT NULL, DATE TEXT NOT NULL,
@@ -150,12 +172,7 @@ def _prepare_schema(connection):
         ID INTEGER PRIMARY KEY, AS_OF TEXT NOT NULL,
         BALANCE_CENTS INTEGER NOT NULL, KNOWN_TOTAL_CENTS INTEGER NOT NULL,
         STATUS TEXT NOT NULL, IMPORTED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
-    connection.execute('''CREATE TABLE IF NOT EXISTS TRANSACTION_ALERTS (
-        TRANSACTION_ID TEXT NOT NULL, RULE_ID TEXT NOT NULL,
-        TRANSACTION_DATE TEXT NOT NULL, LABEL TEXT NOT NULL,
-        AMOUNT_CENTS INTEGER NOT NULL, REASONS TEXT NOT NULL,
-        CHECKED_AT TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (TRANSACTION_ID, RULE_ID))''')
+    prepare_alerts_schema(connection)
     connection.execute('''CREATE TABLE IF NOT EXISTS SPLITWISE_EXPORTS (
         TRANSACTION_ID TEXT PRIMARY KEY NOT NULL, RULE_ID TEXT,
         CATEGORY TEXT NOT NULL CHECK (CATEGORY IN ('auto', 'confirm', 'skip')),

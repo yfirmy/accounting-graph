@@ -15,7 +15,8 @@ from unittest.mock import patch
 
 from balance_checks import reconcile_import
 from database_schema import import_transaction
-from legitimacy_checks import load_rules, refresh_alerts, export_alerts, UNEXPECTED_DIRECT_DEBIT
+from legitimacy_checks import (Alert, load_rules, refresh_alerts, export_alerts,
+                               UNEXPECTED_DIRECT_DEBIT, UNRECOGNIZED_TRANSACTION)
 
 
 spec = importlib.util.spec_from_file_location(
@@ -56,7 +57,7 @@ class LegitimacyTests(unittest.TestCase):
             self.add(str(i), '2026-10-12T{:02d}:00:00'.format(10 + i))
         alerts = self.check(self.rules('amount = 0,46\nmax_per_day = 4'))
         self.assertEqual([a[0] for a in alerts], ['4'])
-        self.assertIn('5 > 4', alerts[0][-1])
+        self.assertIn('5 > 4', alerts[0].reasons)
 
     def test_monthly_limit_counts_existing_rows_across_imports(self):
         self.add('first', '2026-10-01', -2899, legacy=True)
@@ -65,7 +66,7 @@ class LegitimacyTests(unittest.TestCase):
         alerts = self.check(self.rules('amount = 28.99\nmax_per_month = 1'))
         self.assertEqual([a[0] for a in alerts], ['second'])
 
-    def test_unmatched_accounts_and_labels_ignored(self):
+    def test_previously_stored_unmatched_accounts_and_labels_are_not_flagged(self):
         self.add('ignored', '2026-10-12', -100, label='Unwatched')
         self.add('matched', '2026-10-12', -100)
         rules = self.rules('amount = 0.46')
@@ -94,7 +95,7 @@ class LegitimacyTests(unittest.TestCase):
         alerts = self.check([])
         self.assertEqual({a[0] for a in alerts}, {'0', '1', '2'})
         self.assertTrue(all(a[1] == UNEXPECTED_DIRECT_DEBIT for a in alerts))
-        self.assertTrue(all('Prélèvement inattendu' in a[-1] for a in alerts))
+        self.assertTrue(all('Prélèvement inattendu' in a.reasons for a in alerts))
         self.assertEqual(self.matched('0'), [])
 
     def test_rule_for_other_account_does_not_cover_direct_debit(self):
@@ -112,7 +113,8 @@ class LegitimacyTests(unittest.TestCase):
             self.assertEqual(self.matched('one'), [])
             self.assertEqual([a[1] for a in alerts], [UNEXPECTED_DIRECT_DEBIT])
         self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM TRANSACTION_ALERTS').fetchone()[0], 1)
-        self.assertEqual(self.check(self.rules(pattern='Telephone')), [])
+        self.assertEqual([a.rule for a in self.check(self.rules(pattern='Telephone'))],
+                         [UNEXPECTED_DIRECT_DEBIT])
 
     def test_global_start_date_applies_even_without_rules_for_account(self):
         path = self.path / 'rules.ini'
@@ -164,13 +166,14 @@ class LegitimacyTests(unittest.TestCase):
             self.add(str(i), '2026-10-12', amount)
         alerts = self.check(self.rules('min_amount = 0\nmax_amount = 30'))
         self.assertEqual([a[0] for a in alerts], ['0', '4', '5'])
-        self.assertIn('maximum', alerts[0][-1])
-        self.assertIn('Crédit positif', alerts[1][-1])
+        self.assertIn('maximum', alerts[0].reasons)
+        self.assertIn('Crédit positif', alerts[1].reasons)
 
     def test_one_sided_absolute_bounds(self):
         for i, amount in enumerate([-1000, -500, -100, 0, 100]):
             self.add(str(i), '2026-10-12', amount)
-        self.assertEqual([a[0] for a in self.check(self.rules('max_amount = 5'))], ['0', '4'])
+        preview = refresh_alerts(self.connection, '12343918', self.rules('max_amount = 5'), persist=False)
+        self.assertEqual([a[0] for a in preview], ['0', '4'])
         self.assertEqual([a[0] for a in self.check(self.rules('min_amount = 5'))], ['2', '3', '4'])
 
     def test_negative_configuration_amounts_are_rejected(self):
@@ -185,7 +188,7 @@ class LegitimacyTests(unittest.TestCase):
         self.add('following-monday', '2026-01-05')
         alerts = self.check(self.rules('max_per_week = 1'))
         self.assertEqual([a[0] for a in alerts], ['thursday'])
-        self.assertIn('2026-W01', alerts[0][-1])
+        self.assertIn('2026-W01', alerts[0].reasons)
 
     def test_year_resets_and_all_reasons_combined(self):
         self.add('old-year', '2025-12-31')
@@ -195,7 +198,7 @@ class LegitimacyTests(unittest.TestCase):
             'amount = 0.46\nmax_per_day = 1\nmax_per_week = 2\nmax_per_month = 1\nmax_per_year = 1'))
         self.assertEqual(len(alerts), 1)
         for reason in ['maximum', 'jour', 'semaine', 'mois', 'année']:
-            self.assertIn(reason, alerts[0][-1])
+            self.assertIn(reason, alerts[0].reasons)
 
     def test_wrong_amount_still_counts_towards_limit(self):
         self.add('wrong', '2026-10-12T10:00:00', -100)
@@ -219,13 +222,14 @@ class LegitimacyTests(unittest.TestCase):
         alerts = self.check(self.rules('start_date = 2026-10-13\namount = 0.46\n'
             'max_per_day = 1\nmax_per_week = 1\nmax_per_month = 1\nmax_per_year = 1'))
         self.assertEqual([a[0] for a in alerts], ['second'])
-        self.assertEqual(alerts[0][-1].count('2 > 1'), 4)
-        self.assertNotIn('Montant', alerts[0][-1])
+        self.assertEqual(alerts[0].reasons.count('2 > 1'), 4)
+        self.assertNotIn('Montant', alerts[0].reasons)
 
-    def test_changing_start_date_clears_old_alerts_without_deleting_transactions(self):
+    def test_changing_start_date_clears_only_acknowledged_obsolete_alerts(self):
         self.add('old', '2026-09-30', -100)
         self.add('boundary', '2026-10-01', -100)
         self.check(self.rules('amount = 0.46'))
+        self.connection.execute("UPDATE TRANSACTION_ALERTS SET ACKNOWLEDGED_AT = CHECKED_AT WHERE TRANSACTION_ID = 'old'")
         alerts = self.check(self.rules('amount = 0.46\nstart_date = 2026-10-01'))
         self.assertEqual([a[0] for a in alerts], ['boundary'])
         self.assertEqual(self.connection.execute('SELECT TRANSACTION_ID FROM TRANSACTION_ALERTS').fetchall(),
@@ -241,13 +245,20 @@ class LegitimacyTests(unittest.TestCase):
         self.add('september', '2026-09-15')
         self.assertEqual([a[1] for a in self.check(load_rules(path))], ['older'])
 
-    def test_recomputing_report_is_idempotent_and_clears_obsolete_alerts(self):
+    def test_recomputing_report_updates_only_checked_at_and_retains_pending_alerts(self):
         self.add('one', '2026-10-12', -100)
         self.check(self.rules('amount = 0.46'))
-        self.check(self.rules('amount = 0.46'))
-        self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM TRANSACTION_ALERTS').fetchone()[0], 1)
-        self.check(self.rules('amount = 1'))
-        self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM TRANSACTION_ALERTS').fetchone()[0], 0)
+        alert_fields = '''SELECT TRANSACTION_ID, RULE_ID, TRANSACTION_DATE, LABEL, AMOUNT_CENTS,
+            REASONS, CREATED_AT, ACKNOWLEDGED_AT, CHECKED_AT FROM TRANSACTION_ALERTS'''
+        created = self.connection.execute(alert_fields).fetchone()
+        self.assertEqual(created[-3], created[-1])
+        with patch('legitimacy_checks._now_utc', return_value='2026-11-21 10:00:00.000001'):
+            self.check(self.rules('amount = 0.60'))
+        repeated = self.connection.execute(alert_fields).fetchone()
+        self.assertEqual(repeated[:-1], created[:-1])
+        self.assertEqual(repeated[-1], '2026-11-21 10:00:00.000001')
+        self.assertEqual(len(self.check(self.rules('amount = 1'))), 1)
+        self.assertEqual(self.connection.execute(alert_fields).fetchall(), [repeated])
 
     def test_overlapping_rules_have_separate_counts(self):
         self.add('one', '2026-10-12')
@@ -289,18 +300,22 @@ class LegitimacyTests(unittest.TestCase):
         self.assertEqual({a[0] for a in self.check(rules, '12345673918')}, {'two', 'card4'})
 
     def test_csv_unicode_semicolons_decimal_and_empty_report(self):
-        path = export_alerts([('Courant', 'id', 'rule', '2026-10-12',
-                              'Prélèvement; "Test"', -2899, 'Montant incorrect')], self.path)
+        alert = Alert('id', 'rule', '2026-10-12', 'Prélèvement; "Test"', -2899,
+                      'Montant incorrect', '2026-10-13 00:00:00', None)
+        path = export_alerts([('Courant',) + alert], self.path)
         with path.open(encoding='utf-8-sig', newline='') as stream:
             rows = list(csv.reader(stream, delimiter=';'))
         self.assertEqual(rows[1][4], 'Prélèvement; "Test"')
         self.assertEqual(rows[1][5], '-28,99')
+        self.assertEqual(rows[0][7], 'Alerte acquittée')
+        self.assertEqual(rows[1][7:], ['Non', ''])
         export_alerts([], self.path)
         with path.open(encoding='utf-8-sig', newline='') as stream:
             self.assertEqual(len(list(csv.reader(stream, delimiter=';'))), 1)
 
     def test_csv_does_not_turn_bank_labels_into_formulas(self):
-        path = export_alerts([('Courant', 'id', 'r', '2026-10-12', '=1+1', -46, 'motif')], self.path)
+        path = export_alerts([('Courant', 'id', 'r', '2026-10-12', '=1+1', -46, 'motif', None, None)],
+                             self.path)
         self.assertIn("'=1+1", path.read_text(encoding='utf-8-sig'))
 
     def test_failed_balance_does_not_run_legitimacy_or_clear_report(self):
@@ -319,14 +334,15 @@ class LegitimacyTests(unittest.TestCase):
         history = app.AccountStatement('12343918')
         history.balance_date = datetime.datetime(2026, 10, 12, 18)
         history.last_balance = Decimal('1000')
-        history.add(app.Operation('new', datetime.datetime(2026, 10, 12), 'Merchant', Decimal('-0.46')))
+        history.add(app.Operation('new', datetime.datetime(2026, 10, 12), 'Inconnu', Decimal('-0.46')))
         before = list(self.connection.iterdump())
-        with contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(app, 'ask') as ask, contextlib.redirect_stdout(io.StringIO()):
             alerts = app.prepare_and_analyse_history(history, self.connection, True, False, rules)
-        self.assertEqual(len(alerts), 1)
+        ask.assert_not_called()
+        self.assertEqual([alert.rule for alert in alerts], [UNRECOGNIZED_TRANSACTION])
         self.assertEqual(list(self.connection.iterdump()), before)
 
-    def test_full_application_persists_and_exports_without_rejecting_suspicious_purchase(self):
+    def test_application_reviews_new_alerts_and_exports_both_acknowledgment_states(self):
         rules = self.path / 'rules.ini'
         self.rules('amount = 1')
         config = configparser.RawConfigParser()
@@ -334,19 +350,46 @@ class LegitimacyTests(unittest.TestCase):
                           'Directories': {'output': str(self.path)},
                           'Accounts': {'xxxx3918': 'Courant'},
                           'Savings accounts': {'xxxx3918': 'false'}})
+        baseline = app.AccountStatement('12343918')
+        baseline.balance_date = datetime.datetime(2026, 10, 12, 18)
+        baseline.last_balance = Decimal('1000')
+        baseline.add(app.Operation('old', datetime.datetime(2026, 10, 12), 'Historique', Decimal('2')))
+        reconcile_import(baseline, self.connection)
         history = app.AccountStatement('12343918')
-        history.balance_date = datetime.datetime(2026, 10, 12, 18)
-        history.last_balance = Decimal('1000')
-        history.add(app.Operation('new', datetime.datetime(2026, 10, 12), 'Merchant', Decimal('-0.46')))
+        history.balance_date = datetime.datetime(2026, 10, 13, 18)
+        history.last_balance = Decimal('1001.54')
+        history.add(app.Operation('violation', datetime.datetime(2026, 10, 13), 'Merchant', Decimal('-0.46')))
+        history.add(app.Operation('unknown', datetime.datetime(2026, 10, 13), 'Virement inconnu', Decimal('3')))
+        history.add(app.Operation('expected', datetime.datetime(2026, 10, 13), 'Merchant', Decimal('-1')))
+        alert_rows = '''SELECT TRANSACTION_ID, RULE_ID, CREATED_AT, ACKNOWLEDGED_AT
+            FROM TRANSACTION_ALERTS ORDER BY TRANSACTION_ID'''
         with patch.object(app, 'config', config), patch.object(app, 'analyse_operations'), \
                 patch.object(app, 'open_database_connection', return_value=self.connection), \
+                patch('splitwise_sync.sys.stdin.isatty', return_value=True), \
+                patch('builtins.input', side_effect=['non', 'oui', 'non']) as prompt, \
                 contextlib.redirect_stdout(io.StringIO()):
+            app.process_statements([history, history], False, False)
+            first = self.connection.execute(alert_rows).fetchall()
+            self.assertEqual(prompt.call_count, 2)
             app.process_statements([history], False, False)
-            app.process_statements([history], False, False)
-        self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM TRANSACTION_ALERTS').fetchone()[0], 1)
-        csv_text = (self.path / 'transaction_alerts.csv').read_text(encoding='utf-8-sig')
-        self.assertIn('Merchant', csv_text)
-        self.assertNotIn('12343918', csv_text)
+        self.assertEqual(prompt.call_count, 3)
+        self.assertIn('transaction unknown', prompt.call_args_list[1].args[0])
+        self.assertIn('transaction violation', prompt.call_args.args[0])
+        self.assertIn('Acquitter cette alerte ? [oui/non]', prompt.call_args.args[0])
+        self.assertEqual(first, self.connection.execute(alert_rows).fetchall())
+        self.assertEqual([(row[0], row[1]) for row in first],
+                         [('unknown', UNRECOGNIZED_TRANSACTION), ('violation', 'merchant')])
+        self.assertTrue(first[0][2])
+        self.assertTrue(first[0][3])
+        self.assertIsNone(first[1][3])
+        self.assertEqual(self.matched('unknown'), [])
+        self.assertEqual(self.matched('violation'), ['merchant'])
+        with (self.path / 'transaction_alerts.csv').open(encoding='utf-8-sig', newline='') as stream:
+            rows = {row['Transaction']: row for row in csv.DictReader(stream, delimiter=';')}
+        self.assertEqual(rows['unknown']['Alerte acquittée'], 'Oui')
+        self.assertEqual(rows['unknown']['Date d’acquittement (UTC)'], first[0][3])
+        self.assertEqual(rows['violation']['Alerte acquittée'], 'Non')
+        self.assertNotIn('12343918', rows['unknown']['Compte'])
 
     def test_export_combines_accounts_without_combining_their_counters(self):
         rules_path = self.path / 'rules.ini'
