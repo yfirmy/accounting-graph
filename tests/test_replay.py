@@ -48,8 +48,8 @@ class ReplayTests(unittest.TestCase):
             reconcile_import(history, connection)
             connection.execute("UPDATE TRANSACTIONS SET MATCHED_RULES = '[\"old-rule\"]'")
             connection.execute('''INSERT INTO TRANSACTION_ALERTS
-                (TRANSACTION_ID, RULE_ID, TRANSACTION_DATE, LABEL, AMOUNT_CENTS, REASONS)
-                VALUES ('phone', 'old-rule', '2026-10-18', 'Telephone', -1000, 'old reason')''')
+                (TRANSACTION_ID, RULE_ID, TRANSACTION_DATE, LABEL, AMOUNT_CENTS, REASONS, CREATED_AT)
+                VALUES ('phone', 'old-rule', '2026-10-18', 'Telephone', -1000, 'old reason', '2026-10-19 00:00:00')''')
             connection.commit()
         return path
 
@@ -62,7 +62,7 @@ class ReplayTests(unittest.TestCase):
             return [connection.execute('SELECT * FROM ' + table).fetchall()
                     for table in ('TRANSACTIONS', 'BALANCE_OBSERVATIONS', 'sqlite_master')]
 
-    def test_replay_replaces_alerts_and_generates_outputs_without_changing_banking_data(self):
+    def test_replay_keeps_pending_alerts_and_generates_outputs_without_changing_banking_data(self):
         paths = [self.seed(), self.seed('12340407')]
         before = {path: self.banking_data(path) for path in paths}
         output = io.StringIO()
@@ -71,23 +71,28 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(len(list(self.output.glob('*.pdf'))), 4)
         report = (self.output / 'transaction_alerts.csv').read_text(encoding='utf-8-sig')
         self.assertIn('phone', report)
-        self.assertNotIn('old-rule', report)
+        self.assertIn('old-rule', report)
         self.assertIn('Courant', report)
         self.assertIn('Commun', report)
         self.assertIn('référence initiale reste non vérifiée', output.getvalue())
         for path in paths:
             self.assertEqual(self.banking_data(path), before[path])
             with contextlib.closing(sqlite3.connect(str(path))) as connection:
-                self.assertEqual(connection.execute(
-                    'SELECT TRANSACTION_ID, RULE_ID FROM TRANSACTION_ALERTS').fetchall(), [('phone', 'phone')])
+                self.assertEqual(connection.execute('''SELECT TRANSACTION_ID, RULE_ID FROM TRANSACTION_ALERTS
+                    ORDER BY RULE_ID''').fetchall(), [('phone', 'old-rule'), ('phone', 'phone')])
 
-    def test_corrected_rules_clear_old_alerts_on_repeated_replays(self):
+    def test_resolved_alert_is_removed_only_after_review_and_another_replay(self):
         path = self.seed()
         before = self.banking_data(path)
         self.rules.write_text('[phone]\naccount = XXXXXXXX\nlabel_regex = Telephone\namount = 10\n')
-        with patch.object(app, 'draw_stored_history'), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(app, 'draw_stored_history'), patch.object(app, 'ask', return_value='oui') as ask, \
+                contextlib.redirect_stdout(io.StringIO()):
             app.replay_analysis()
+            with contextlib.closing(sqlite3.connect(str(path))) as connection:
+                self.assertTrue(connection.execute('SELECT ACKNOWLEDGED_AT FROM TRANSACTION_ALERTS').fetchone()[0])
+            self.assertIn(';Oui;', (self.output / 'transaction_alerts.csv').read_text(encoding='utf-8-sig'))
             app.replay_analysis()
+        ask.assert_called_once()
         with contextlib.closing(sqlite3.connect(str(path))) as connection:
             self.assertEqual(connection.execute('SELECT * FROM TRANSACTION_ALERTS').fetchall(), [])
         self.assertEqual(self.banking_data(path), before)
@@ -114,6 +119,28 @@ class ReplayTests(unittest.TestCase):
         draw.assert_not_called()
         self.assertFalse(self.output.exists())
         self.assertEqual(path.read_bytes(), before)
+
+    def test_replay_adds_alert_timestamps_after_backing_up_legacy_report(self):
+        path = self.seed()
+        with contextlib.closing(sqlite3.connect(str(path))) as connection:
+            connection.execute('ALTER TABLE TRANSACTION_ALERTS DROP COLUMN CREATED_AT')
+            connection.execute('ALTER TABLE TRANSACTION_ALERTS DROP COLUMN ACKNOWLEDGED_AT')
+            connection.execute("UPDATE TRANSACTION_ALERTS SET CHECKED_AT = '2026-10-19 00:00:00'")
+            connection.commit()
+        before = self.dump(path)
+        with patch.object(app, 'draw_stored_history'), patch.object(app, 'ask', return_value='non') as ask, \
+                contextlib.redirect_stdout(io.StringIO()):
+            app.replay_analysis(dry_run_mode=True)
+            ask.assert_not_called()
+            self.assertFalse((self.root / 'backups').exists())
+            self.assertEqual(self.dump(path), before)
+            app.replay_analysis()
+        backups = list(self.root.glob('backups/*.db'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(self.dump(backups[0]), before)
+        with contextlib.closing(sqlite3.connect(str(path))) as connection:
+            self.assertEqual(connection.execute('''SELECT CREATED_AT, ACKNOWLEDGED_AT FROM TRANSACTION_ALERTS
+                WHERE RULE_ID = 'old-rule' ''').fetchone(), ('2026-10-19 00:00:00', None))
 
     def test_modified_transaction_fails_snapshot_check_without_writing(self):
         path = self.seed()

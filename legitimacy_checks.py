@@ -1,4 +1,4 @@
-"""Rule-based transaction checks and coverage checks for direct debits."""
+"""Rule-based transaction checks and acknowledgment of alerts."""
 from collections import Counter
 import configparser
 import csv
@@ -9,12 +9,26 @@ import os
 from pathlib import Path
 import re
 import tempfile
+from typing import NamedTuple
 
+from database_schema import alert_columns
 from money import cents
 
 
 UNEXPECTED_DIRECT_DEBIT = 'prélèvement_inconnu'
+UNRECOGNIZED_TRANSACTION = 'transaction_non_reconnue'
 DIRECT_DEBIT_LABEL = re.compile(r'^(PRELEVEMENT|PrÃ©lÃ¨vement|Prélèvement)')
+
+
+class Alert(NamedTuple):
+    identifier: str
+    rule: str
+    date: str
+    label: str
+    amount: int
+    reasons: str
+    created_at: str | None
+    acknowledged_at: str | None
 
 
 class Rules(list):
@@ -56,6 +70,8 @@ def load_rules(filename):
         try:
             if name == UNEXPECTED_DIRECT_DEBIT:
                 raise ValueError('This rule name is reserved for unexpected direct debit alerts')
+            if name == UNRECOGNIZED_TRANSACTION:
+                raise ValueError('This rule name is reserved for unrecognized transaction alerts')
             if set(section) - allowed:
                 raise ValueError('Unknown options: ' + ', '.join(sorted(set(section) - allowed)))
             if not section.getboolean('enabled', fallback=True):
@@ -108,12 +124,39 @@ def period_keys(day):
             'month': day.strftime('%Y-%m'), 'year': str(day.year)}
 
 
-def refresh_alerts(connection, account_id, rules, persist=True, update_matches=True):
+def read_alerts(connection, preview=False):
+    timestamps = 'CREATED_AT, ACKNOWLEDGED_AT'
+    if preview:
+        columns = alert_columns(connection)
+        if not columns:
+            return []
+        created = 'CREATED_AT' if 'CREATED_AT' in columns else 'CHECKED_AT'
+        acknowledged = 'ACKNOWLEDGED_AT' if 'ACKNOWLEDGED_AT' in columns else 'NULL'
+        timestamps = created + ', ' + acknowledged
+    return [Alert(*row) for row in connection.execute('''SELECT TRANSACTION_ID, RULE_ID,
+        TRANSACTION_DATE, LABEL, AMOUNT_CENTS, REASONS, {} FROM TRANSACTION_ALERTS
+        ORDER BY TRANSACTION_DATE, TRANSACTION_ID, RULE_ID'''.format(timestamps))]
+
+
+def _now_utc():
+    return datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
+
+
+def acknowledge_alert(connection, alert):
+    with connection:
+        connection.execute('''UPDATE TRANSACTION_ALERTS SET ACKNOWLEDGED_AT = ?
+            WHERE TRANSACTION_ID = ? AND RULE_ID = ? AND CREATED_AT IS ?
+            AND ACKNOWLEDGED_AT IS NULL''', (_now_utc(), alert.identifier, alert.rule, alert.created_at))
+
+
+def refresh_alerts(connection, account_id, rules, persist=True, update_matches=True,
+                   new_transaction_ids=()):
     """Recompute the full report, counting every matching transaction once per rule.
 
     Posting dates use the application's UTC convention; legacy DATE is retained.
     Same-day ties with no posting time are ordered by the transaction identifier.
     Callers own the transaction. Replay can persist alerts without updating transactions.
+    Existing matching alerts retain their first detection, reasons and acknowledgment.
     """
     transactions = []
     for identifier, date, posted, label, amount in connection.execute(
@@ -122,7 +165,9 @@ def refresh_alerts(connection, account_id, rules, persist=True, update_matches=T
                 datetime.datetime.strptime(date, '%d/%m/%Y'))
         transactions.append((when, str(identifier), label or '', amount))
     transactions.sort(key=lambda row: (row[0], row[1]))
-    alerts = []
+    detected = []
+    previous = {(alert.identifier, alert.rule): alert
+                for alert in read_alerts(connection, preview=not persist)}
     matched_rules = {identifier: [] for _, identifier, _, _ in transactions}
     account_rules = [rule for rule in rules if rule.account.fullmatch(str(account_id))]
     coverage_start = getattr(rules, 'default_start_date', None)
@@ -161,22 +206,41 @@ def refresh_alerts(connection, account_id, rules, persist=True, update_matches=T
                     reasons.append('Occurrences {} {} : {} > {}'.format(
                         period_label, key, counts[period, key], rule.limits[period]))
             if reasons:
-                alerts.append((identifier, rule.name, when.isoformat(), label, amount, ' ; '.join(reasons)))
+                detected.append((identifier, rule.name, when.isoformat(), label, amount, ' ; '.join(reasons)))
     if persist and update_matches:
         connection.executemany('UPDATE TRANSACTIONS SET MATCHED_RULES = ? WHERE ID = ?',
                                [(json.dumps(names, ensure_ascii=False), identifier)
                                 for identifier, names in matched_rules.items()])
     for when, identifier, label, amount in transactions:
-        if coverage_start is not None and when.date() < coverage_start:
+        if matched_rules[identifier]:
             continue
-        if DIRECT_DEBIT_LABEL.match(label) and not matched_rules[identifier]:
-            alerts.append((identifier, UNEXPECTED_DIRECT_DEBIT, when.isoformat(), label, amount,
-                           'Prélèvement inattendu : aucune règle active ne correspond à cette transaction'))
+        is_direct_debit = DIRECT_DEBIT_LABEL.match(label) is not None
+        if is_direct_debit:
+            rule = UNEXPECTED_DIRECT_DEBIT
+            reason = 'Prélèvement inattendu : aucune règle active ne correspond à cette transaction'
+        else:
+            rule = UNRECOGNIZED_TRANSACTION
+            reason = 'Transaction non reconnue : aucune règle active ne correspond à cette transaction'
+        covered_debit = is_direct_debit and (coverage_start is None or when.date() >= coverage_start)
+        # Recheck transactions that already raised this alert, including on replay.
+        if identifier in new_transaction_ids or (identifier, rule) in previous or covered_debit:
+            detected.append((identifier, rule, when.isoformat(), label, amount, reason))
+
+    checked_at = _now_utc()
+    current = {row[:2]: row for row in detected}
+    obsolete = [key for key, alert in previous.items()
+                if key not in current and alert.acknowledged_at is not None]
     if persist:
-        connection.execute('DELETE FROM TRANSACTION_ALERTS')
+        connection.executemany('''DELETE FROM TRANSACTION_ALERTS
+            WHERE TRANSACTION_ID = ? AND RULE_ID = ? AND ACKNOWLEDGED_AT IS NOT NULL''', obsolete)
         connection.executemany('''INSERT INTO TRANSACTION_ALERTS
-            (TRANSACTION_ID, RULE_ID, TRANSACTION_DATE, LABEL, AMOUNT_CENTS, REASONS)
-            VALUES (?, ?, ?, ?, ?, ?)''', alerts)
+            (TRANSACTION_ID, RULE_ID, TRANSACTION_DATE, LABEL, AMOUNT_CENTS, REASONS, CREATED_AT, CHECKED_AT)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (TRANSACTION_ID, RULE_ID) DO UPDATE SET CHECKED_AT = excluded.CHECKED_AT''',
+            (row + (checked_at, checked_at) for row in detected))
+    alerts = [previous.get(key, Alert(*row, checked_at, None)) for key, row in current.items()]
+    alerts.extend(alert for key, alert in previous.items()
+                  if key not in current and alert.acknowledged_at is None)
     return alerts
 
 
@@ -191,14 +255,16 @@ def export_alerts(rows, output_directory):
                                          dir=directory, delete=False) as stream:
             temporary = Path(stream.name)
             writer = csv.writer(stream, delimiter=';')
-            writer.writerow(['Compte', 'Transaction', 'Règle', 'Date', 'Libellé', 'Montant EUR', 'Motifs'])
+            writer.writerow(['Compte', 'Transaction', 'Règle', 'Date', 'Libellé', 'Montant EUR', 'Motifs',
+                             'Alerte acquittée', 'Date d’acquittement (UTC)'])
             def text(value):
                 value = str(value)
                 # Labels are bank-provided data, never spreadsheet formulas.
                 return "'" + value if value.lstrip().startswith(('=', '+', '-', '@')) else value
-            for account, identifier, rule, date, label, amount, reasons in rows:
+            for account, identifier, rule, date, label, amount, reasons, _, acknowledged_at in rows:
                 writer.writerow([text(account), text(identifier), text(rule), date, text(label),
-                                 '{:.2f}'.format(amount / 100).replace('.', ','), text(reasons)])
+                                 '{:.2f}'.format(amount / 100).replace('.', ','), text(reasons),
+                                 'Oui' if acknowledged_at is not None else 'Non', acknowledged_at or ''])
         os.replace(str(temporary), str(path))
     finally:
         if temporary is not None and temporary.exists():
