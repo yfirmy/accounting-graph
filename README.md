@@ -205,17 +205,19 @@ Unexpected extra columns, custom constraints or foreign keys stop automatic
 migration rather than silently discarding data. A failed migration/import rolls
 back to the original database, while the independent backup remains available.
 
-`BALANCE_OBSERVATIONS` stores the bank balance, its exact date, the known
-transaction total and the reconciliation status at each import.
-`TRANSACTION_ALERTS` tracks detected and pending transaction alerts.
-`TRANSACTIONS_UPGRADE` exists only while replacing the old integer-ID table; after
-success it has become `TRANSACTIONS`, and after failure it is rolled back.
+`BALANCE_OBSERVATIONS` enregistre à chaque import le solde bancaire, sa date
+exacte, le total des transactions connues et le statut du rapprochement.
+`TRANSACTION_ALERTS` assure le suivi des alertes détectées et en attente.
+`TRANSACTIONS_UPGRADE` remplace temporairement l’ancienne table aux identifiants
+entiers. La migration la renomme en `TRANSACTIONS` en cas de succès et annule
+sa création en cas d’échec.
 
-The first import establishes a new verification baseline without deleting any
-history. `--dry-run` can preview the migration and reconciliation with no retained
-database changes and no backup file. The backups are complete databases that can
-be restored independently; keep a separate copy on another disk for protection
-against loss of the drive containing both the database and its local backups.
+Le premier import établit une nouvelle référence pour le contrôle du solde et
+conserve tout l’historique. `--dry-run` simule la migration et le rapprochement
+sans conserver de modifications dans la base ni créer de fichier de sauvegarde.
+Chaque sauvegarde contient une base complète et peut être restaurée indépendamment.
+Conservez une copie sur un autre disque pour protéger les données en cas de
+perte du disque qui contient la base et ses sauvegardes locales.
 
 ## Surveillance des transactions
 
