@@ -125,6 +125,7 @@ def period_keys(day):
 
 
 def read_alerts(connection, preview=False):
+    """Return debit alerts for the report and review, leaving older credit alerts in storage."""
     timestamps = 'CREATED_AT, ACKNOWLEDGED_AT'
     if preview:
         columns = alert_columns(connection)
@@ -135,6 +136,7 @@ def read_alerts(connection, preview=False):
         timestamps = created + ', ' + acknowledged
     return [Alert(*row) for row in connection.execute('''SELECT TRANSACTION_ID, RULE_ID,
         TRANSACTION_DATE, LABEL, AMOUNT_CENTS, REASONS, {} FROM TRANSACTION_ALERTS
+        WHERE AMOUNT_CENTS < 0
         ORDER BY TRANSACTION_DATE, TRANSACTION_ID, RULE_ID'''.format(timestamps))]
 
 
@@ -151,7 +153,7 @@ def acknowledge_alert(connection, alert):
 
 def refresh_alerts(connection, account_id, rules, persist=True, update_matches=True,
                    new_transaction_ids=()):
-    """Recompute the full report, counting every matching transaction once per rule.
+    """Recompute the report, counting every matching debit once per rule.
 
     Posting dates use the application's UTC convention; legacy DATE is retained.
     Same-day ties with no posting time are ordered by the transaction identifier.
@@ -159,16 +161,20 @@ def refresh_alerts(connection, account_id, rules, persist=True, update_matches=T
     Existing matching alerts retain their first detection, reasons and acknowledgment.
     """
     transactions = []
+    matched_rules = {}
     for identifier, date, posted, label, amount in connection.execute(
             'SELECT ID, DATE, POSTED_AT, LABEL, AMOUNT_CENTS FROM TRANSACTIONS'):
+        identifier = str(identifier)
+        matched_rules[identifier] = []
+        if amount >= 0:
+            continue
         when = (datetime.datetime.fromisoformat(posted) if posted else
                 datetime.datetime.strptime(date, '%d/%m/%Y'))
-        transactions.append((when, str(identifier), label or '', amount))
+        transactions.append((when, identifier, label or '', amount))
     transactions.sort(key=lambda row: (row[0], row[1]))
     detected = []
     previous = {(alert.identifier, alert.rule): alert
                 for alert in read_alerts(connection, preview=not persist)}
-    matched_rules = {identifier: [] for _, identifier, _, _ in transactions}
     account_rules = [rule for rule in rules if rule.account.fullmatch(str(account_id))]
     coverage_start = getattr(rules, 'default_start_date', None)
     if coverage_start is None and account_rules and all(rule.start_date is not None for rule in account_rules):
@@ -184,13 +190,10 @@ def refresh_alerts(connection, account_id, rules, persist=True, update_matches=T
             matched_rules[identifier].append(rule.name)
             reasons = []
             expense = -amount
-            if amount > 0 and (rule.minimum is not None or rule.maximum is not None):
-                reasons.append('Crédit positif : une dépense ou un montant nul est attendu')
-            else:
-                if rule.minimum is not None and expense < rule.minimum:
-                    reasons.append('Dépense inférieure au minimum ({:.2f} EUR)'.format(rule.minimum / 100))
-                if rule.maximum is not None and expense > rule.maximum:
-                    reasons.append('Dépense supérieure au maximum ({:.2f} EUR)'.format(rule.maximum / 100))
+            if rule.minimum is not None and expense < rule.minimum:
+                reasons.append('Dépense inférieure au minimum ({:.2f} EUR)'.format(rule.minimum / 100))
+            if rule.maximum is not None and expense > rule.maximum:
+                reasons.append('Dépense supérieure au maximum ({:.2f} EUR)'.format(rule.maximum / 100))
             if rule.allowed_from and day < rule.allowed_from:
                 reasons.append('Date antérieure au ' + rule.allowed_from.isoformat())
             if rule.allowed_until and day > rule.allowed_until:

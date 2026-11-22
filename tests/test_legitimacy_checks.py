@@ -159,22 +159,34 @@ class LegitimacyTests(unittest.TestCase):
         for i, amount in enumerate([-5001, -5000, -501, -500, -499, 500]):
             self.add(str(i), '2026-10-12', amount)
         alerts = self.check(self.rules('min_amount = 5\nmax_amount = 50'))
-        self.assertEqual([a[0] for a in alerts], ['0', '4', '5'])
+        self.assertEqual([a[0] for a in alerts], ['0', '4'])
 
     def test_zero_to_thirty_accepts_only_debits_within_bounds(self):
         for i, amount in enumerate([-3001, -3000, -2899, 0, 1, 2899]):
             self.add(str(i), '2026-10-12', amount)
         alerts = self.check(self.rules('min_amount = 0\nmax_amount = 30'))
-        self.assertEqual([a[0] for a in alerts], ['0', '4', '5'])
+        self.assertEqual([a[0] for a in alerts], ['0'])
         self.assertIn('maximum', alerts[0].reasons)
-        self.assertIn('Crédit positif', alerts[1].reasons)
 
     def test_one_sided_absolute_bounds(self):
         for i, amount in enumerate([-1000, -500, -100, 0, 100]):
             self.add(str(i), '2026-10-12', amount)
         preview = refresh_alerts(self.connection, '12343918', self.rules('max_amount = 5'), persist=False)
-        self.assertEqual([a[0] for a in preview], ['0', '4'])
-        self.assertEqual([a[0] for a in self.check(self.rules('min_amount = 5'))], ['2', '3', '4'])
+        self.assertEqual([a[0] for a in preview], ['0'])
+        self.assertEqual([a[0] for a in self.check(self.rules('min_amount = 5'))], ['2'])
+
+    def test_rule_without_amount_bounds_counts_only_debits(self):
+        self.add('credit', '2026-10-12T09:00:00', 46)
+        self.add('zero', '2026-10-12T10:00:00', 0)
+        self.add('first', '2026-10-12T11:00:00')
+        self.add('second', '2026-10-12T12:00:00')
+        self.connection.execute('''UPDATE TRANSACTIONS SET MATCHED_RULES = '["merchant"]'
+            WHERE ID IN ('credit', 'zero')''')
+        alerts = self.check(self.rules('max_per_day = 1'))
+        self.assertEqual([alert.identifier for alert in alerts], ['second'])
+        self.assertIn('2 > 1', alerts[0].reasons)
+        self.assertEqual(self.matched('credit'), [])
+        self.assertEqual(self.matched('zero'), [])
 
     def test_negative_configuration_amounts_are_rejected(self):
         for key in ['amount', 'min_amount', 'max_amount']:
@@ -357,10 +369,13 @@ class LegitimacyTests(unittest.TestCase):
         reconcile_import(baseline, self.connection)
         history = app.AccountStatement('12343918')
         history.balance_date = datetime.datetime(2026, 10, 13, 18)
-        history.last_balance = Decimal('1001.54')
+        history.last_balance = Decimal('1000.54')
         history.add(app.Operation('violation', datetime.datetime(2026, 10, 13), 'Merchant', Decimal('-0.46')))
-        history.add(app.Operation('unknown', datetime.datetime(2026, 10, 13), 'Virement inconnu', Decimal('3')))
+        history.add(app.Operation('unknown', datetime.datetime(2026, 10, 13), 'Virement inconnu', Decimal('-3')))
         history.add(app.Operation('expected', datetime.datetime(2026, 10, 13), 'Merchant', Decimal('-1')))
+        history.add(app.Operation('credit', datetime.datetime(2026, 10, 13), 'Virement reçu', Decimal('3')))
+        history.add(app.Operation('refund', datetime.datetime(2026, 10, 13), 'Merchant', Decimal('2')))
+        history.add(app.Operation('zero', datetime.datetime(2026, 10, 13), 'PRELEVEMENT Inconnu', Decimal('0')))
         alert_rows = '''SELECT TRANSACTION_ID, RULE_ID, CREATED_AT, ACKNOWLEDGED_AT
             FROM TRANSACTION_ALERTS ORDER BY TRANSACTION_ID'''
         with patch.object(app, 'config', config), patch.object(app, 'analyse_operations'), \
@@ -383,6 +398,9 @@ class LegitimacyTests(unittest.TestCase):
         self.assertTrue(first[0][3])
         self.assertIsNone(first[1][3])
         self.assertEqual(self.matched('unknown'), [])
+        self.assertEqual(self.matched('credit'), [])
+        self.assertEqual(self.matched('refund'), [])
+        self.assertEqual(self.matched('zero'), [])
         self.assertEqual(self.matched('violation'), ['merchant'])
         with (self.path / 'transaction_alerts.csv').open(encoding='utf-8-sig', newline='') as stream:
             rows = {row['Transaction']: row for row in csv.DictReader(stream, delimiter=';')}

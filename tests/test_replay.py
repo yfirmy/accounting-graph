@@ -81,6 +81,27 @@ class ReplayTests(unittest.TestCase):
                 self.assertEqual(connection.execute('''SELECT TRANSACTION_ID, RULE_ID FROM TRANSACTION_ALERTS
                     ORDER BY RULE_ID''').fetchall(), [('phone', 'old-rule'), ('phone', 'phone')])
 
+    def test_replay_excludes_existing_credit_alert_from_review_and_report(self):
+        path = self.seed()
+        credit_alert = ('old', 'transaction_non_reconnue', '2026-09-01', 'Opening', 10000,
+                        'Ancienne alerte de crédit', '2026-10-19 00:00:00', '2026-10-19 00:00:00', None)
+        with contextlib.closing(sqlite3.connect(str(path))) as connection, connection:
+            connection.execute('''INSERT INTO TRANSACTION_ALERTS
+                (TRANSACTION_ID, RULE_ID, TRANSACTION_DATE, LABEL, AMOUNT_CENTS, REASONS,
+                 CHECKED_AT, CREATED_AT, ACKNOWLEDGED_AT) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', credit_alert)
+        output = io.StringIO()
+        with patch.object(app, 'draw_stored_history'), patch.object(app, 'ask', return_value='oui') as ask, \
+                contextlib.redirect_stdout(output):
+            app.replay_analysis()
+        self.assertEqual(ask.call_count, 2)
+        self.assertTrue(all('transaction phone' in call.args[0] for call in ask.call_args_list))
+        self.assertNotIn('Ancienne alerte de crédit', output.getvalue())
+        report = (self.output / 'transaction_alerts.csv').read_text(encoding='utf-8-sig')
+        self.assertNotIn('Ancienne alerte de crédit', report)
+        with contextlib.closing(sqlite3.connect(str(path))) as connection:
+            self.assertEqual(connection.execute('''SELECT * FROM TRANSACTION_ALERTS
+                WHERE TRANSACTION_ID = 'old' ''').fetchone(), credit_alert)
+
     def test_resolved_alert_is_removed_only_after_review_and_another_replay(self):
         path = self.seed()
         before = self.banking_data(path)
