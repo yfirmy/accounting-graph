@@ -251,7 +251,7 @@ max_per_month = 1
 | `account` | Numéro de compte complet ou masqué : chaque `X` ou `x` remplace exactement un chiffre. |
 | `label_regex` | Expression régulière Python, sensible à la casse, recherchée dans le libellé. Utiliser `^` et `$` pour imposer le libellé entier, ou `(?i)` pour ignorer la casse. |
 | `amount` | Valeur absolue de la dépense en euros : `28.99` exige une transaction de −28,99 €. Les points et virgules décimales sont acceptés. |
-| `min_amount`, `max_amount` | Bornes positives inclusives, à utiliser à la place de `amount`. `min_amount = 0` et `max_amount = 30` acceptent les transactions de −30 à 0 €. Une seule borne est possible. |
+| `min_amount`, `max_amount` | Bornes inclusives sur la valeur absolue du débit, à utiliser à la place de `amount`. `min_amount = 0` et `max_amount = 30` acceptent les débits jusqu’à 30 €. Une seule borne est possible. |
 | `max_per_day`, `max_per_week`, `max_per_month`, `max_per_year` | Plafonds d'occurrences indépendants, entiers positifs ou nuls. Une option absente n'impose pas de plafond. |
 | `start_date` | Date de démarrage inclusive (`YYYY-MM-DD`). Les transactions antérieures sont ignorées, y compris dans les compteurs. Sans cette option, tout l'historique est examiné. |
 | `allowed_from`, `allowed_until` | Bornes de dates autorisées inclusives, au format `YYYY-MM-DD`. Les transactions correspondantes en dehors de ces dates sont signalées, pas ignorées. |
@@ -259,12 +259,12 @@ max_per_month = 1
 | `month_days` | Jours autorisés du mois, séparés par des virgules, entre 1 et 31. |
 | `enabled` | `false` désactive la règle ; `true` par défaut. |
 
-Les montants de configuration doivent être positifs ou nuls : une valeur négative
-est signalée comme erreur de configuration. Un crédit positif ne satisfait pas
-une règle de montant de dépense, même si sa valeur absolue est dans l'intervalle.
+Les montants de configuration doivent être positifs ou nuls. Le contrôle de
+légitimité s’applique uniquement aux débits, dont le montant est strictement
+négatif. Les crédits et les opérations à zéro sont exclus du contrôle, y compris
+des compteurs de fréquence.
 Le signe bancaire original est conservé dans la base, la console et le CSV.
-Une règle sans aucune borne de montant continue à contrôler seulement les dates
-et les occurrences, quel que soit le signe de la transaction.
+Une règle sans borne de montant contrôle seulement les dates et les occurrences.
 
 Pour limiter une règle aux habitudes courantes, ajouter par exemple
 `start_date = 2026-10-01` dans sa section. Cette règle vérifie les transactions à
@@ -282,11 +282,11 @@ règles qui nécessitent une autre date :
 start_date = 2026-10-01
 ```
 
-Les règles s'appliquent **après l'acceptation du solde**, sans bloquer un import
-pour une simple alerte. Elles examinent **tout l'historique stocké des comptes
-présents dans le fichier OFX**, à partir du `start_date` de chaque règle lorsqu'il
-est défini, y compris au premier import servant de référence
-de solde. Les règles d'un compte ne comptent jamais les transactions d'un autre.
+Les règles s’appliquent **après l’acceptation du solde**, sans bloquer un import
+pour une simple alerte. Elles examinent **l’historique des débits des comptes
+présents dans le fichier OFX**, à partir du `start_date` de chaque règle lorsqu’il
+est défini, y compris au premier import servant de référence de solde. Chaque
+compte a ses propres compteurs.
 
 Les compteurs utilisent des jours calendaires, des semaines ISO (lundi à
 dimanche), des mois calendaires et des années civiles. Les dates suivent la
@@ -300,14 +300,14 @@ correspondantes comptent, même si leur montant ou leur date est déjà anormal.
 
 La colonne `TRANSACTIONS.MATCHED_RULES` contient les noms des règles applicables
 sous forme de liste JSON, par exemple `["bouygues_telecom", "Prélèvements"]`.
-Une liste vide `[]` signifie qu'aucune règle ne correspond. Les noms sont ceux
-des sections du fichier INI. La correspondance repose sur le compte, le libellé
-et le `start_date` d'une règle active : un montant ou une fréquence anormale ne
-supprime pas cette classification et déclenche toujours son alerte habituelle.
-La colonne est recalculée à chaque import ; les références à une règle supprimée,
-renommée ou désactivée ne restent pas dans les transactions.
+Une liste vide `[]` indique un débit sans correspondance ou une opération hors
+du périmètre du contrôle. Les noms sont ceux des sections du fichier INI.
+La correspondance repose sur le compte, le libellé et le `start_date` d’une
+règle active. Un écart de montant ou de fréquence déclenche une alerte et la
+règle reste enregistrée dans `MATCHED_RULES`. La colonne est recalculée à chaque
+import pour refléter les règles actives.
 
-Chaque transaction nouvellement importée dont `MATCHED_RULES` vaut `[]` déclenche
+Chaque débit nouvellement importé dont `MATCHED_RULES` vaut `[]` déclenche
 une alerte **« Transaction non reconnue »**, sous l’identifiant réservé
 `transaction_non_reconnue`. Cela inclut les opérations antidatées et les comptes
 sans règle. Les prélèvements sans correspondance gardent le libellé
@@ -333,6 +333,8 @@ ou lancer le programme sans terminal interactif laisse l’alerte en attente pou
 le prochain passage. Une alerte acquittée figure dans le rapport de l’exécution
 et reste visible tant qu’elle se reproduit. Si le contrôle ne la détecte plus,
 le programme la retire lors d’un passage suivant dès lors qu’elle est acquittée.
+Les anciennes alertes de crédits et d’opérations à zéro sont conservées en base,
+hors des demandes d’acquittement et de l’export.
 
 À la fin du traitement, **`transaction_alerts.csv`** est écrit dans le répertoire
 `[Directories] output`, avec les graphiques. Ce fichier regroupe les alertes des
