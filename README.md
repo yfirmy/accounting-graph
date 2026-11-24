@@ -327,7 +327,8 @@ dernière détection. Quand une alerte se reproduit, le contrôle actualise
 uniquement `CHECKED_AT`. La migration reprend l’ancien `CHECKED_AT` comme date de
 création des alertes déjà présentes.
 
-Le terminal demande d’acquitter chaque alerte en attente. Répondre `oui`
+Le terminal demande d’acquitter chaque alerte en attente. L’en-tête « Alerte
+pour… » s’affiche en rouge et la question en jaune. Répondre `oui`
 enregistre la date UTC dans `ACKNOWLEDGED_AT`. Répondre `non`, appuyer sur Entrée
 ou lancer le programme sans terminal interactif laisse l’alerte en attente pour
 le prochain passage. Une alerte acquittée figure dans le rapport de l’exécution
@@ -341,8 +342,9 @@ hors des demandes d’acquittement et de l’export.
 comptes traités durant cette exécution et remplace le précédent rapport. Il est
 en UTF-8 avec BOM, utilise `;` comme séparateur et la virgule décimale. Les comptes
 sont masqués et les libellés et identifiants de transactions restent présents.
-La colonne `Alerte acquittée` indique `Oui` ou `Non` pour chaque ligne, avec la
-date UTC d’acquittement dans la colonne suivante.
+Le terminal et la colonne `Alerte acquittée` indiquent `Non` ou `Oui` suivi de la
+date et de l’heure d’acquittement entre parenthèses, à l’heure de Paris. Le CSV
+donne aussi la date d’acquittement en UTC dans une colonne dédiée.
 S'il n'y a aucune alerte, le fichier contient seulement les en-têtes, évitant de
 laisser un ancien rapport périmé. `--dry-run` affiche les alertes sans poser de
 question, modifier les tables ou écrire le CSV.

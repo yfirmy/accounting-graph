@@ -111,9 +111,10 @@ class ReplayTests(unittest.TestCase):
             app.replay_analysis()
             with contextlib.closing(sqlite3.connect(str(path))) as connection:
                 self.assertTrue(connection.execute('SELECT ACKNOWLEDGED_AT FROM TRANSACTION_ALERTS').fetchone()[0])
-            self.assertIn(';Oui;', (self.output / 'transaction_alerts.csv').read_text(encoding='utf-8-sig'))
+            self.assertIn(';Oui (', (self.output / 'transaction_alerts.csv').read_text(encoding='utf-8-sig'))
             app.replay_analysis()
         ask.assert_called_once()
+        self.assertNotIn('\033[', ask.call_args.args[0])
         with contextlib.closing(sqlite3.connect(str(path))) as connection:
             self.assertEqual(connection.execute('SELECT * FROM TRANSACTION_ALERTS').fetchall(), [])
         self.assertEqual(self.banking_data(path), before)
