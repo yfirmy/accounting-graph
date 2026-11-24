@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import tempfile
 from typing import NamedTuple
+from zoneinfo import ZoneInfo
 
 from database_schema import alert_columns
 from money import cents
@@ -247,6 +248,16 @@ def refresh_alerts(connection, account_id, rules, persist=True, update_matches=T
     return alerts
 
 
+def format_acknowledgment_status(acknowledged_at):
+    if acknowledged_at is None:
+        return 'Non'
+    timestamp = datetime.datetime.fromisoformat(acknowledged_at)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=datetime.timezone.utc)
+    local_time = timestamp.astimezone(ZoneInfo('Europe/Paris'))
+    return 'Oui ({:%d/%m/%Y %H:%M:%S %Z})'.format(local_time)
+
+
 def export_alerts(rows, output_directory):
     """Atomically replace a UTF-8 CSV report for the accounts in this import."""
     directory = Path(output_directory).expanduser()
@@ -267,7 +278,7 @@ def export_alerts(rows, output_directory):
             for account, identifier, rule, date, label, amount, reasons, _, acknowledged_at in rows:
                 writer.writerow([text(account), text(identifier), text(rule), date, text(label),
                                  '{:.2f}'.format(amount / 100).replace('.', ','), text(reasons),
-                                 'Oui' if acknowledged_at is not None else 'Non', acknowledged_at or ''])
+                                 format_acknowledgment_status(acknowledged_at), acknowledged_at or ''])
         os.replace(str(temporary), str(path))
     finally:
         if temporary is not None and temporary.exists():

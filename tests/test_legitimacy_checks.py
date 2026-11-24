@@ -378,34 +378,48 @@ class LegitimacyTests(unittest.TestCase):
         history.add(app.Operation('zero', datetime.datetime(2026, 10, 13), 'PRELEVEMENT Inconnu', Decimal('0')))
         alert_rows = '''SELECT TRANSACTION_ID, RULE_ID, CREATED_AT, ACKNOWLEDGED_AT
             FROM TRANSACTION_ALERTS ORDER BY TRANSACTION_ID'''
+        timestamp = '2026-10-13 22:34:56.123456'
+        output = io.StringIO()
         with patch.object(app, 'config', config), patch.object(app, 'analyse_operations'), \
                 patch.object(app, 'open_database_connection', return_value=self.connection), \
+                patch('legitimacy_checks._now_utc', return_value=timestamp), \
                 patch('splitwise_sync.sys.stdin.isatty', return_value=True), \
                 patch('builtins.input', side_effect=['non', 'oui', 'non']) as prompt, \
-                contextlib.redirect_stdout(io.StringIO()):
+                patch.object(output, 'isatty', return_value=True), \
+                patch.dict(app.os.environ, {'NO_COLOR': ''}), contextlib.redirect_stdout(output):
             app.process_statements([history, history], False, False)
             first = self.connection.execute(alert_rows).fetchall()
             self.assertEqual(prompt.call_count, 2)
-            app.process_statements([history], False, False)
+            output.seek(0)
+            output.truncate()
+            with patch.dict(app.os.environ, {'NO_COLOR': '1'}):
+                app.process_statements([history], False, False)
         self.assertEqual(prompt.call_count, 3)
-        self.assertIn('transaction unknown', prompt.call_args_list[1].args[0])
+        unknown_prompt = prompt.call_args_list[1].args[0]
+        self.assertIn('transaction unknown', unknown_prompt)
+        self.assertIn('\033[91mAlerte pour Courant (XXXXX918)\033[0m', unknown_prompt)
+        self.assertIn('\033[33mAcquitter cette alerte ? [oui/non]\033[0m', unknown_prompt)
         self.assertIn('transaction violation', prompt.call_args.args[0])
         self.assertIn('Acquitter cette alerte ? [oui/non]', prompt.call_args.args[0])
+        self.assertNotIn('\033[', prompt.call_args.args[0])
         self.assertEqual(first, self.connection.execute(alert_rows).fetchall())
         self.assertEqual([(row[0], row[1]) for row in first],
                          [('unknown', UNRECOGNIZED_TRANSACTION), ('violation', 'merchant')])
         self.assertTrue(first[0][2])
-        self.assertTrue(first[0][3])
+        self.assertEqual(first[0][3], timestamp)
         self.assertIsNone(first[1][3])
         self.assertEqual(self.matched('unknown'), [])
         self.assertEqual(self.matched('credit'), [])
         self.assertEqual(self.matched('refund'), [])
         self.assertEqual(self.matched('zero'), [])
         self.assertEqual(self.matched('violation'), ['merchant'])
+        status = 'Oui (14/10/2026 00:34:56 CEST)'
+        self.assertIn('Alerte acquittée : ' + status, output.getvalue())
+        self.assertIn('Alerte acquittée : Non', output.getvalue())
         with (self.path / 'transaction_alerts.csv').open(encoding='utf-8-sig', newline='') as stream:
             rows = {row['Transaction']: row for row in csv.DictReader(stream, delimiter=';')}
-        self.assertEqual(rows['unknown']['Alerte acquittée'], 'Oui')
-        self.assertEqual(rows['unknown']['Date d’acquittement (UTC)'], first[0][3])
+        self.assertEqual(rows['unknown']['Alerte acquittée'], status)
+        self.assertEqual(rows['unknown']['Date d’acquittement (UTC)'], timestamp)
         self.assertEqual(rows['violation']['Alerte acquittée'], 'Non')
         self.assertNotIn('12343918', rows['unknown']['Compte'])
 

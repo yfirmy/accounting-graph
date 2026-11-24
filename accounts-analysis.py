@@ -20,7 +20,8 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from balance_checks import cents, latest_observation, reconcile_import, verify_stored_balance
 from database_schema import alert_columns, alerts_need_upgrade, backup_before_upgrade, prepare_alerts_schema
-from legitimacy_checks import load_rules, refresh_alerts, read_alerts, acknowledge_alert, export_alerts
+from legitimacy_checks import (load_rules, refresh_alerts, read_alerts, acknowledge_alert,
+                               format_acknowledgment_status, export_alerts)
 from ofx_input import collect_latest_ofx, print_file_dates, read_ofx
 from ofx_encryption import encryption_settings, encrypt_ofx
 from splitwise_sync import ask, load_settings as load_splitwise_settings, enqueue, sync_pending, sync_pending_many
@@ -438,19 +439,23 @@ def print_transaction_alerts(account_id, alerts):
             '\033[0m' + '"' + alert.rule.replace('_', ' ') + '"'))
         print('\033[33m' + '    {}'.format(alert.label) + '\033[0m')
         print('\033[91m' + '    Motifs : {}'.format(alert.reasons) + '\033[0m')
-        print('    Alerte acquittée : ' + ('Oui' if alert.acknowledged_at is not None else 'Non'))
+        print('    Alerte acquittée : ' + format_acknowledgment_status(alert.acknowledged_at))
         print("\n")
 
 
 def review_transaction_alerts(account_id, connection, alerts):
     account = '{} ({})'.format(get_account_name(account_id), get_masked_account_id(str(account_id)))
+    heading = 'Alerte pour ' + account
+    confirmation = 'Acquitter cette alerte ? [oui/non]'
+    if sys.stdout.isatty() and not os.environ.get('NO_COLOR'):
+        heading = '\033[91m' + heading + '\033[0m'
+        confirmation = '\033[33m' + confirmation + '\033[0m'
     for alert in alerts:
         if alert.acknowledged_at is not None:
             continue
-        question = ('Alerte pour {} — transaction {} du {} — {} — {}\n'
-                    'Règle {} — {}\nAcquitter cette alerte ? [oui/non]').format(
-            account, alert.identifier, datetime.datetime.fromisoformat(alert.date).strftime('%d/%m/%Y %H:%M:%S'),
-            format_amount(alert.amount / 100), alert.label, alert.rule.replace('_', ' '), alert.reasons)
+        question = ('{} — transaction {} du {} — {} — {}\nRègle {} — {}\n{}').format(
+            heading, alert.identifier, datetime.datetime.fromisoformat(alert.date).strftime('%d/%m/%Y %H:%M:%S'),
+            format_amount(alert.amount / 100), alert.label, alert.rule.replace('_', ' '), alert.reasons, confirmation)
         if ask(question, {'oui', 'non'}, service='Alertes') == 'oui':
             acknowledge_alert(connection, alert)
     return read_alerts(connection)
